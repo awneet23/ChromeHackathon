@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SyncUp Extension Test Page</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #e8eaed;
+        }
+        h1 {
+            color: #8ab4f8;
+        }
+        .test-box {
+            background: #2d2d2d;
+            border: 2px solid #8ab4f8;
+            border-radius: 12px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .test-box h2 {
+            color: #aecbfa;
+            margin-top: 0;
+        }
+        .test-box p {
+            line-height: 1.6;
+        }
+        .instruction {
+            background: #34a853;
+            color: white;
+            padding: 10px 15px;
+            border-radius: 8px;
+            margin: 10px 0;
+            font-weight: bold;
+        }
+        .result {
+            background: #292a2d;
+            padding: 15px;
+            border-radius: 8px;
+            border-left: 4px solid #8ab4f8;
+            margin: 10px 0;
+            font-family: monospace;
+        }
+        button {
+            background: #8ab4f8;
+            color: #202124;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            margin: 10px 5px;
+        }
+        button:hover {
+            background: #aecbfa;
+        }
+        .success {
+            color: #34a853;
+        }
+        .error {
+            color: #ea4335;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎯 SyncUp Extension Test Page</h1>
+    <p>Use this page to test all SyncUp features</p>
+
+    <!-- Test 1: Content Script Injection -->
+    <div class="test-box">
+        <h2>Test 1: Content Script Loaded</h2>
+        <p>Check if SyncUp content script is injected:</p>
+        <button onclick="testContentScript()">Run Test</button>
+        <div class="result" id="test1-result">Click button to test...</div>
+    </div>
+
+    <!-- Test 2: Command Palette -->
+    <div class="test-box">
+        <h2>Test 2: Command Palette</h2>
+        <p class="instruction">Press Ctrl+Shift+Space (or Cmd+Shift+Space on Mac)</p>
+        <p>Expected: Command palette overlay appears</p>
+        <div class="result" id="test2-result">
+            Status: Waiting for shortcut press...<br>
+            <small>If it doesn't work, check console (F12)</small>
+        </div>
+    </div>
+
+    <!-- Test 3: Old Shortcut Disabled -->
+    <div class="test-box">
+        <h2>Test 3: Old Shortcut Disabled</h2>
+        <p class="instruction">Press Ctrl+K (or Cmd+K on Mac)</p>
+        <p>Expected: NOTHING should happen (SyncUp palette should NOT open)</p>
+        <div class="result" id="test3-result">
+            Status: Waiting for shortcut press...<br>
+            <small>If SyncUp palette opens, old script is still cached</small>
+        </div>
+    </div>
+
+    <!-- Test 4: Check Extension Icon -->
+    <div class="test-box">
+        <h2>Test 4: Extension Icon</h2>
+        <p>1. Look at Chrome toolbar (top right)</p>
+        <p>2. Do you see the SyncUp icon?</p>
+        <p>3. If not, click the puzzle piece 🧩 and pin it</p>
+        <button onclick="alert('Look at top-right corner of Chrome!\nClick puzzle icon 🧩 if SyncUp not visible')">Check Icon Location</button>
+    </div>
+
+    <!-- Test 5: Side Panel -->
+    <div class="test-box">
+        <h2>Test 5: Side Panel</h2>
+        <p class="instruction">Click the SyncUp icon in toolbar</p>
+        <p>Expected: Side panel slides in from right</p>
+        <div class="result">
+            If clicking icon does nothing:<br>
+            1. Check chrome://extensions/<br>
+            2. Verify SyncUp is enabled<br>
+            3. Reload extension<br>
+            4. Try clicking icon again
+        </div>
+    </div>
+
+    <!-- Test 6: Console Logs -->
+    <div class="test-box">
+        <h2>Test 6: Console Messages</h2>
+        <p>Open DevTools (F12) → Console tab</p>
+        <button onclick="showExpectedLogs()">Show Expected Logs</button>
+        <div class="result" id="test6-result" style="display:none;">
+            <strong>Expected console messages:</strong><br>
+            ✅ "🌐 SyncUp Universal loaded on: Web"<br>
+            ✅ "👀 Content detection started"<br>
+            ✅ "⌨️ Command palette shortcuts registered (Ctrl+Shift+Space)"<br>
+            <br>
+            <strong>If you see:</strong><br>
+            ❌ Errors → Check TROUBLESHOOTING.md<br>
+            ❌ Nothing → Content script not loaded<br>
+            ❌ "Ctrl+K" → Old script cached, reload!
+        </div>
+    </div>
+
+    <!-- Test Keywords for Context Cards -->
+    <div class="test-box">
+        <h2>Test 7: Keyword Detection (Universal Feature)</h2>
+        <p>This page mentions: <strong>Docker, Kubernetes, React, Python, TypeScript</strong></p>
+        <p>These keywords should be detected by SyncUp and generate context cards.</p>
+        <div class="result">
+            Note: Universal content detection is implemented but needs backend connection.<br>
+            Check console for "📝 Detected new content" messages.
+        </div>
+    </div>
+
+    <script>
+        // Test 1: Check if content script loaded
+        function testContentScript() {
+            const result = document.getElementById('test1-result');
+
+            // Check for SyncUp elements
+            const hasPalette = !!document.querySelector('.syncup-command-palette');
+            const hasContentScript = typeof window.syncupLoaded !== 'undefined';
+
+            if (hasPalette || hasContentScript) {
+                result.innerHTML = '<span class="success">✅ SUCCESS</span><br>SyncUp content script is loaded!';
+            } else {
+                result.innerHTML = '<span class="error">❌ FAILED</span><br>Content script not detected.<br><small>Try: Reload extension, then reload this page (Ctrl+Shift+F5)</small>';
+            }
+        }
+
+        // Monitor keyboard events for testing
+        let lastKeyCombo = '';
+        document.addEventListener('keydown', (e) => {
+            const ctrl = e.ctrlKey || e.metaKey;
+            const shift = e.shiftKey;
+            const key = e.key;
+
+            // Test 2: New shortcut
+            if (ctrl && shift && key === ' ') {
+                document.getElementById('test2-result').innerHTML =
+                    '<span class="success">✅ Shortcut detected!</span><br>Ctrl+Shift+Space was pressed.<br>Palette should appear above this page.';
+            }
+
+            // Test 3: Old shortcut should do nothing
+            if (ctrl && !shift && key.toLowerCase() === 'k') {
+                document.getElementById('test3-result').innerHTML =
+                    '<span class="success">✅ Good!</span><br>Ctrl+K detected.<br>If SyncUp palette did NOT open, old shortcut is disabled correctly!<br>If it DID open, old script is still cached.';
+            }
+        });
+
+        // Test 6: Show expected logs
+        function showExpectedLogs() {
+            document.getElementById('test6-result').style.display = 'block';
+        }
+
+        // Auto-run Test 1 after 1 second
+        setTimeout(() => {
+            console.log('🧪 SyncUp Test Page Ready');
+            console.log('Run tests by clicking buttons or using keyboard shortcuts');
+        }, 1000);
+    </script>
+
+    <hr style="margin: 40px 0; border: 1px solid #444;">
+
+    <div style="text-align: center; color: #9aa0a6;">
+        <p><strong>📚 More Help:</strong></p>
+        <p>Check TROUBLESHOOTING.md for detailed fixes</p>
+        <p>Check QUICK_REFERENCE.md for usage guide</p>
+        <p>Press F12 to open DevTools and check console</p>
+    </div>
+</body>
+</html>

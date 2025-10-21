@@ -1,10 +1,15 @@
 /**
- * SyncUp Background Service Worker
- * Handles audio capture, Gemini transcription, and Cerebras contextual analysis
+ * SyncUp Background Service Worker - Universal Version
+ * Integrates Google Gemini for all AI features
+ * Preserves existing Google Meet functionality
  */
 
-class SyncUpBackground {
+// Import Gemini client (will be loaded via importScripts in service worker)
+// importScripts('shared/gemini-client.js', 'shared/constants.js');
+
+class SyncUpUniversal {
   constructor() {
+    // Existing Google Meet state (PRESERVED)
     this.isRecording = false;
     this.currentStream = null;
     this.contextualCards = [];
@@ -13,43 +18,201 @@ class SyncUpBackground {
     this.processedTopics = new Set();
     this.audioContext = null;
     this.mediaRecorder = null;
-    
-    // API configurations - User needs to add their keys
-    this.GEMINI_API_KEY = ''; // Add your Gemini API key here
-    this.CEREBRAS_API_KEY = ''; // Add your Cerebras API key here
-    this.CEREBRAS_API_URL = 'https://api.cerebras.ai/v1/chat/completions';
-    
-    // Use real speech recognition instead of demo mode
-    this.USE_SPEECH_RECOGNITION = true;
-    
+
+    // New universal state
+    this.geminiClient = null;
+    this.activeTabContexts = new Map(); // Map<tabId, context>
+    this.conversationHistory = [];
+    this.actionItems = [];
+    this.settings = null;
+
     this.init();
   }
 
-  init() {
-    // Listen for messages from popup and content script
+  async init() {
+    console.log('🚀 SyncUp Universal initializing...');
+
+    // Load settings and initialize Gemini
+    await this.loadSettings();
+    await this.initializeGemini();
+
+    // Setup message listeners
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       this.handleMessage(message, sender, sendResponse);
-      return true; // Keep message channel open for async responses
+      return true; // Keep channel open for async
     });
 
-    // Handle extension startup
+    // Setup command keyboard shortcut
+    chrome.commands.onCommand.addListener((command) => {
+      if (command === 'open-command-palette') {
+        this.openCommandPalette();
+      }
+    });
+
+    // Track active tab changes
+    chrome.tabs.onActivated.addListener((activeInfo) => {
+      this.handleTabActivated(activeInfo);
+    });
+
+    // Track tab updates
+    chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+      if (changeInfo.status === 'complete') {
+        this.handleTabUpdated(tabId, tab);
+      }
+    });
+
+    // Cleanup on startup
     chrome.runtime.onStartup.addListener(() => {
-      this.resetState();
+      this.cleanupOldData();
     });
 
-    // Handle extension install
     chrome.runtime.onInstalled.addListener(() => {
-      this.resetState();
+      console.log('✅ SyncUp Universal installed');
+      this.showWelcomeNotification();
     });
+
+    // Open side panel when extension icon is clicked
+    chrome.action.onClicked.addListener((tab) => {
+      this.openSidePanel(tab);
+    });
+
+    console.log('✅ SyncUp Universal ready');
   }
 
   /**
-   * Handle messages from popup and content scripts
+   * Load settings from storage
    */
-  handleMessage(message, sender, sendResponse) {
-    (async () => {
+  async loadSettings() {
+    try {
+      const result = await chrome.storage.sync.get(['syncup_settings']);
+      this.settings = result.syncup_settings || {
+        geminiApiKey: 'AIzaSyClTRj0FVD-fDtuD47ZyGS0Mm2pgU4bRGg',
+        enableUniversalContext: true,
+        enableActionItems: true,
+        autoDeleteHistory: true,
+        historyRetentionHours: 24,
+        excludedDomains: ['chrome://*', 'chrome-extension://*']
+      };
+      console.log('📋 Settings loaded');
+    } catch (error) {
+      console.error('Failed to load settings:', error);
+      this.settings = {};
+    }
+  }
+
+  /**
+   * Initialize Gemini client with API key
+   */
+  async initializeGemini() {
+    if (this.settings.geminiApiKey) {
       try {
-        switch (message.type) {
+        // Create new GeminiClient instance
+        this.geminiClient = {
+          apiKey: this.settings.geminiApiKey,
+          baseURL: 'https://generativelanguage.googleapis.com/v1',
+          model: 'gemini-2.5-flash',
+
+          async generateContent(prompt, options = {}) {
+            if (!this.apiKey) {
+              throw new Error('Gemini API key not configured');
+            }
+
+            const endpoint = `${this.baseURL}/models/${this.model}:generateContent?key=${this.apiKey}`;
+
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: prompt }] }],
+                generationConfig: {
+                  temperature: options.temperature || 0.5,
+                  maxOutputTokens: options.maxOutputTokens || 800
+                }
+              })
+            });
+
+            if (!response.ok) {
+              const errorText = await response.text();
+              console.error('❌ Gemini API Error:', response.status);
+              console.error('❌ Response:', errorText);
+              console.error('❌ Endpoint:', endpoint);
+              throw new Error(`Gemini API error: ${response.status} - ${errorText.substring(0, 200)}`);
+            }
+
+            const data = await response.json();
+            console.log('✅ Gemini response received:', data);
+            const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+
+            if (!text) {
+              console.error('❌ No text in response:', data);
+              throw new Error('No content in Gemini response');
+            }
+
+            console.log('✅ Gemini text extracted:', text.substring(0, 100));
+            return text;
+          },
+
+          parseJSON(text) {
+            try {
+              // Remove markdown code blocks
+              let cleanText = text.replace(/```json\n?|\n?```/g, '').trim();
+
+              // Try to extract JSON if embedded in other text
+              const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
+              if (jsonMatch) {
+                cleanText = jsonMatch[0];
+              }
+
+              console.log('🔍 Attempting to parse JSON, length:', cleanText.length);
+
+              // Attempt to parse
+              return JSON.parse(cleanText);
+            } catch (error) {
+              console.error('❌ JSON Parse Error:', error.message);
+              console.error('❌ Error position:', error.message);
+              console.error('❌ Raw text (first 500 chars):', text.substring(0, 500));
+
+              // Try to fix common issues and retry
+              try {
+                let cleanText = text.replace(/```json\n?|\n?```/g, '').trim();
+                const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
+                if (jsonMatch) {
+                  cleanText = jsonMatch[0];
+                }
+
+                // Replace unescaped newlines in strings (but not in JSON structure)
+                // This is a simple fix - replace \n that aren't already escaped
+                let fixed = cleanText.replace(/([^\\])\\n/g, '$1\\\\n');
+
+                console.log('🔧 Trying fixed JSON...');
+                return JSON.parse(fixed);
+              } catch (retryError) {
+                console.error('❌ Retry also failed:', retryError.message);
+                console.error('❌ Full raw response:', text);
+
+                // Final fallback: return structured error
+                throw new Error(`Failed to parse Gemini JSON response: ${error.message}. Check console for full response.`);
+              }
+            }
+          }
+        };
+
+        console.log('✅ Gemini client initialized');
+      } catch (error) {
+        console.error('Failed to initialize Gemini:', error);
+      }
+    } else {
+      console.warn('⚠️ No Gemini API key configured');
+    }
+  }
+
+  /**
+   * Handle messages from content scripts and popup
+   */
+  async handleMessage(message, sender, sendResponse) {
+    try {
+      switch (message.type) {
+        // ==== EXISTING GOOGLE MEET MESSAGES (PRESERVED) ====
         case 'START_RECORDING':
           const startResult = await this.startRecording();
           sendResponse(startResult);
@@ -79,7 +242,6 @@ class SyncUpBackground {
           break;
 
         case 'SIDEBAR_INJECTED':
-          // Content script is ready, send current state
           this.sendToContentScript(sender.tab.id, 'RECORDING_STATUS', {
             isRecording: this.isRecording
           });
@@ -89,50 +251,77 @@ class SyncUpBackground {
           break;
 
         case 'TRANSCRIPT_RECEIVED':
-          // Process transcript from content script's speech recognition
           if (message.transcript) {
-            console.log('═══════════════════════════════════════');
-            console.log('📥 BACKGROUND: Received 15-second transcript batch');
-            console.log('📝 Transcript length:', message.transcript.length, 'chars');
-            console.log('📝 Transcript:', message.transcript);
-            console.log('═══════════════════════════════════════');
-            await this.processTranscript(message.transcript);
-            console.log('✅ BACKGROUND: Transcript processing complete');
-            console.log('📦 Total cards now:', this.contextualCards.length);
-          } else {
-            console.warn('⚠️ BACKGROUND: Empty transcript received');
+            console.log('📥 Transcript received:', message.transcript.substring(0, 100));
+            await this.processTranscriptWithGemini(message.transcript);
           }
           sendResponse({ success: true });
           break;
 
         case 'CHATBOX_QUESTION':
-          // Handle chatbox question - like normal AI with meeting context awareness
-          console.log('═══════════════════════════════════════');
-          console.log('💬 CHATBOX QUESTION RECEIVED');
-          console.log('Question:', message.question);
-          console.log('Meeting context length:', message.meetingContext?.length || 0);
-          console.log('═══════════════════════════════════════');
-
-          if (message.question) {
-            await this.handleChatboxQuestion(
-              message.question,
-              message.meetingContext || ''
-            );
-            console.log('✅ Chatbox answer generated');
-          }
+          console.log('💬 Chatbox question:', message.question);
+          await this.handleChatboxQuestionWithGemini(
+            message.question,
+            message.meetingContext || ''
+          );
           sendResponse({ success: true });
           break;
+
+        // ==== NEW UNIVERSAL MESSAGES ====
+        case 'TAB_CONTENT_DETECTED':
+          await this.handleContentDetected(message, sender.tab);
+          sendResponse({ success: true });
+          break;
+
+        case 'GEMINI_GENERATE_CONTEXT':
+          const contextCard = await this.generateContextCard(message.topic);
+          sendResponse({ success: true, card: contextCard });
+          break;
+
+        case 'OPEN_SIDE_PANEL':
+          await this.openSidePanel(sender.tab);
+          sendResponse({ success: true });
+          break;
+
+        case 'GET_SETTINGS':
+          sendResponse({ settings: this.settings });
+          break;
+
+        case 'UPDATE_SETTINGS':
+          await this.updateSettings(message.settings);
+          sendResponse({ success: true });
+          break;
+
+        case 'TEST_API_KEY':
+          const testResult = await this.testGeminiAPIKey(message.apiKey);
+          sendResponse(testResult);
+          break;
+
+        case 'EXECUTE_COMMAND':
+          // Handle command palette questions with context
+          console.log('⚡ Command palette question:', message.command);
+          await this.handleCommandPaletteQuestion(
+            message.command,
+            sender.tab,
+            message.currentPageContext,
+            message.currentPageUrl,
+            message.currentPageTitle
+          );
+          sendResponse({ success: true });
+          break;
+
+        default:
+          console.warn('Unknown message type:', message.type);
+          sendResponse({ error: 'Unknown message type' });
       }
     } catch (error) {
-      console.error('Background script error:', error);
+      console.error('Message handler error:', error);
       sendResponse({ error: error.message });
     }
-    })();
-    return true; // Keep message channel open for async response
   }
 
   /**
-   * Start recording and transcription process
+   * EXISTING: Start recording (PRESERVED)
    */
   async startRecording() {
     if (this.isRecording) {
@@ -140,20 +329,15 @@ class SyncUpBackground {
     }
 
     try {
-      // Find Google Meet tabs
-      let tabs = await chrome.tabs.query({ 
-        url: 'https://meet.google.com/*'
-      });
-      
+      const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+
       if (tabs.length === 0) {
-        throw new Error('No Google Meet tab found. Please join a meeting first.');
+        throw new Error('No Google Meet tab found');
       }
 
       this.isRecording = true;
-      
-      console.log('✅ Recording state set to true');
+      console.log('✅ Recording started');
       return { success: true };
-      
     } catch (error) {
       console.error('Failed to start recording:', error);
       this.isRecording = false;
@@ -162,34 +346,29 @@ class SyncUpBackground {
   }
 
   /**
-   * Stop recording and cleanup
+   * EXISTING: Stop recording (PRESERVED)
    */
   async stopRecording() {
     if (!this.isRecording) {
-      return { error: 'Not currently recording' };
+      return { error: 'Not recording' };
     }
 
     try {
-      // Stop audio stream
       if (this.currentStream) {
         this.currentStream.getTracks().forEach(track => track.stop());
         this.currentStream = null;
       }
 
-      // Stop media recorder
       if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
         this.mediaRecorder.stop();
         this.mediaRecorder = null;
       }
 
       this.isRecording = false;
-      
-      // Notify content script
       this.broadcastToContentScript('RECORDING_STATUS', { isRecording: false });
 
-      console.log('Recording stopped successfully');
+      console.log('🛑 Recording stopped');
       return { success: true };
-      
     } catch (error) {
       console.error('Failed to stop recording:', error);
       return { error: error.message };
@@ -197,796 +376,479 @@ class SyncUpBackground {
   }
 
   /**
-   * Process transcript to extract topics and generate contextual information
+   * NEW: Process transcript using Gemini (replaces Cerebras)
    */
-  async processTranscript(transcript) {
-    if (!transcript.trim()) return;
+  async processTranscriptWithGemini(transcript) {
+    if (!transcript.trim() || !this.geminiClient) return;
 
-    console.log('📥 Processing 15-second transcript batch:', transcript);
+    console.log('🤖 Processing transcript with Gemini...');
 
-    // Process IMMEDIATELY - content script already batched it for 15 seconds
-    await this.extractTopicsAndGenerateCards(transcript);
+    try {
+      // Step 1: Extract keywords
+      const keywordsPrompt = `Extract 1-3 important keywords from: "${transcript}"
+Return ONLY JSON array: ["keyword1", "keyword2"]`;
 
-    console.log('✅ 15-second batch processed');
+      const keywordsText = await this.geminiClient.generateContent(keywordsPrompt);
+      const keywords = this.geminiClient.parseJSON(keywordsText);
+
+      console.log('📋 Extracted keywords:', keywords);
+
+      // Step 2: Generate context cards for new keywords
+      for (const keyword of keywords) {
+        if (!this.processedTopics.has(keyword.toLowerCase())) {
+          await this.generateContextCardWithGemini(keyword);
+          this.processedTopics.add(keyword.toLowerCase());
+        }
+      }
+
+    } catch (error) {
+      console.error('Failed to process transcript with Gemini:', error);
+    }
   }
 
   /**
-   * Extract keywords/topics and generate AI explanation cards (like asking ChatGPT)
+   * NEW: Generate context card using Gemini
    */
-  async extractTopicsAndGenerateCards(text) {
-    if (!text.trim()) {
-      console.log('⚠️ Empty text, skipping extraction');
+  async generateContextCardWithGemini(keyword) {
+    if (!this.geminiClient) return;
+
+    try {
+      const prompt = `Provide concise information about "${keyword}".
+
+IMPORTANT: Return ONLY valid JSON (no markdown, no extra text). Keep all text short and avoid quotes or special characters that break JSON.
+
+Return JSON:
+{
+  "explanation": "Clear explanation in 2-3 sentences",
+  "keyPoints": ["point1", "point2", "point3"],
+  "useCase": "When and why this is used",
+  "learnMore": ["resource1", "resource2"]
+}`;
+
+      const responseText = await this.geminiClient.generateContent(prompt);
+      const response = this.geminiClient.parseJSON(responseText);
+
+      const card = {
+        id: Date.now() + Math.random(),
+        topic: keyword,
+        timestamp: new Date().toLocaleTimeString(),
+        summary: response.explanation,
+        keyPoints: response.keyPoints || [],
+        useCase: response.useCase,
+        resources: response.learnMore || [],
+        expanded: false,
+        isAutoGenerated: true
+      };
+
+      this.addCard(card);
+      console.log('✅ Context card generated with Gemini:', keyword);
+
+    } catch (error) {
+      console.error('Failed to generate context card:', error);
+    }
+  }
+
+  /**
+   * NEW: Handle chatbox question using Gemini
+   */
+  async handleChatboxQuestionWithGemini(question, meetingContext) {
+    if (!this.geminiClient) {
+      this.addErrorCard(question, 'Gemini API not configured');
       return;
     }
 
     try {
-      console.log('═══════════════════════════════════════');
-      console.log('🔍 STARTING KEYWORD EXTRACTION');
-      console.log('Text:', text);
-      console.log('Text length:', text.length);
-      console.log('═══════════════════════════════════════');
+      const prompt = `You are a helpful AI assistant. Answer this question intelligently.
 
-      // Step 1: Extract important keywords/topics
-      const keywordsResponse = await fetch(this.CEREBRAS_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.CEREBRAS_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'gpt-oss-120b',
-          messages: [
-            {
-              role: 'system',
-              content: `You are a keyword extraction expert. Extract 1-3 most important keywords, topics, or concepts from the conversation that someone might want to learn more about.
+${meetingContext ? `Meeting Context Available: "${meetingContext}"\n` : 'No meeting context available.\n'}
+Question: ${question}
 
-              Focus on:
-              - Technical terms (e.g., "Docker", "Kubernetes", "MCP")
-              - Technologies, tools, frameworks (e.g., "React", "PostgreSQL")
-              - Concepts, methodologies (e.g., "Agile", "Microservices")
-              - Products, services, companies (e.g., "AWS Lambda", "GitHub Actions")
-              - Any specific terms that need explanation
+IMPORTANT INSTRUCTIONS:
+1. First, check if the question can be answered using the meeting context
+2. If yes, provide an answer based on the meeting AND also provide general knowledge about the topic
+3. If no meeting context or not relevant, provide a comprehensive general answer
+4. ALWAYS provide helpful information regardless of whether meeting context exists
+5. Keep answers concise (2-3 sentences each)
+6. Avoid using quotes or special characters that break JSON formatting
 
-              Extract the EXACT terms as mentioned (e.g., if they say "docker mcp", extract "docker mcp" not "Docker Containerization").
+Return ONLY valid JSON (no markdown, no extra text):
+{
+  "meetingAnswer": "Answer based on meeting context (or Not discussed in meeting if not applicable)",
+  "generalAnswer": "Comprehensive general knowledge answer about this topic",
+  "wasInMeeting": true,
+  "additionalInfo": ["helpful point 1", "helpful point 2", "helpful point 3"]
+}`;
 
-              Return ONLY a JSON array of keyword strings. Keep them concise and specific.
-              Example: ["docker mcp", "kubernetes", "react hooks"]
+      const responseText = await this.geminiClient.generateContent(prompt);
+      const response = this.geminiClient.parseJSON(responseText);
 
-              Do NOT include common words. Only extract meaningful keywords that need explanation.`
-            },
-            {
-              role: 'user',
-              content: `Extract important keywords from: "${text}"`
-            }
-          ],
-          temperature: 0.2,
-          max_tokens: 300
-        })
-      });
+      // Build comprehensive answer showing both meeting context and general knowledge
+      let fullAnswer = '';
 
-      if (!keywordsResponse.ok) {
-        const errorText = await keywordsResponse.text();
-        console.error('❌ Keyword extraction failed:', keywordsResponse.status);
-        console.error('Error details:', errorText);
-        console.error('API URL:', this.CEREBRAS_API_URL);
-        console.error('Model:', 'gpt-oss-120b');
-        console.error('API Key configured:', this.CEREBRAS_API_KEY ? 'Yes' : 'No');
-        return;
-      }
-
-      const keywordsData = await keywordsResponse.json();
-      console.log('📦 Full API response:', JSON.stringify(keywordsData, null, 2));
-
-      // Cerebras may return 'content' or 'reasoning' field
-      const message = keywordsData.choices?.[0]?.message;
-      const keywordsContent = message?.content || message?.reasoning;
-
-      if (!keywordsContent) {
-        console.log('⚠️ No keywords extracted - empty content and reasoning');
-        console.log('📦 Message object:', message);
-        return;
-      }
-
-      console.log('🔍 Raw keywords content:', keywordsContent);
-      const cleanContent = keywordsContent.replace(/```json\n?|\n?```/g, '').trim();
-      console.log('🧹 Cleaned keywords content:', cleanContent);
-
-      let keywords;
-      try {
-        keywords = JSON.parse(cleanContent);
-      } catch (parseError) {
-        console.error('❌ Failed to parse keywords JSON:', parseError);
-        console.error('📝 Content that failed:', cleanContent);
-        return;
-      }
-      console.log('📋 Extracted keywords:', keywords);
-      console.log('📊 Keywords count:', keywords?.length || 0);
-
-      // Step 2: Generate AI explanation card for each keyword (like asking ChatGPT)
-      for (const keyword of keywords) {
-        if (!this.processedTopics.has(keyword.toLowerCase())) {
-          console.log(`💡 Generating AI explanation for: ${keyword}`);
-          await this.generateAIExplanationCard(keyword);
-          console.log(`✅ Finished generating card for: ${keyword}`);
-          this.processedTopics.add(keyword.toLowerCase());
-        } else {
-          console.log(`⏭️ Already explained: ${keyword}`);
-        }
-      }
-
-      console.log('✅ All keywords processed. Total cards:', this.contextualCards.length);
-
-    } catch (error) {
-      console.error('❌ Failed to extract topics:', error);
-      console.error('Error details:', error.message);
-    }
-  }
-
-  /**
-   * Demo topic extraction using keyword matching
-   */
-  async extractTopicsDemo(text) {
-    const techKeywords = {
-      'docker': 'Docker',
-      'kubernetes': 'Kubernetes',
-      'react': 'React',
-      'postgresql': 'PostgreSQL',
-      'mongodb': 'MongoDB',
-      'tensorflow': 'TensorFlow',
-      'github actions': 'GitHub Actions',
-      'aws lambda': 'AWS Lambda',
-      'python': 'Python',
-      'redis': 'Redis',
-      'jwt': 'JWT',
-      'rest': 'REST API',
-      'microservices': 'Microservices',
-      'ci/cd': 'CI/CD',
-      'travel': 'Travel',
-      'vacation': 'Vacation',
-      'hotel': 'Hotels',
-      'flight': 'Flights',
-      'tourism': 'Tourism',
-      'restaurant': 'Restaurants',
-      'food': 'Food & Dining',
-      'weather': 'Weather',
-      'budget': 'Budget Planning',
-      'itinerary': 'Travel Itinerary',
-      'destination': 'Travel Destinations',
-      'booking': 'Booking & Reservations',
-      'passport': 'Travel Documents',
-      'visa': 'Visa Requirements'
-    };
-
-    const lowerText = text.toLowerCase();
-    
-    // First check for exact keyword matches
-    for (const [keyword, topic] of Object.entries(techKeywords)) {
-      if (lowerText.includes(keyword) && !this.processedTopics.has(topic.toLowerCase())) {
-        await this.generateContextualCard(topic);
-        this.processedTopics.add(topic.toLowerCase());
-      }
-    }
-    
-    // Also extract capitalized words as potential topics (proper nouns)
-    const words = text.split(/\s+/);
-    for (const word of words) {
-      // Check if word starts with capital letter and is longer than 3 characters
-      if (word.length > 3 && /^[A-Z][a-z]+/.test(word)) {
-        const cleanWord = word.replace(/[^a-zA-Z]/g, '');
-        if (cleanWord && !this.processedTopics.has(cleanWord.toLowerCase())) {
-          await this.generateContextualCard(cleanWord);
-          this.processedTopics.add(cleanWord.toLowerCase());
-        }
-      }
-    }
-  }
-
-  /**
-   * Generate AI explanation card (like asking ChatGPT "what is X?")
-   */
-  async generateAIExplanationCard(keyword) {
-    try {
-      console.log(`🤖 Asking AI: "What is ${keyword}?"`);
-
-      // Ask AI to explain the keyword (like ChatGPT)
-      const response = await fetch(this.CEREBRAS_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.CEREBRAS_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'gpt-oss-120b',
-          messages: [
-            {
-              role: 'system',
-              content: `You are a helpful AI assistant. When asked about a topic, provide a clear, comprehensive explanation like ChatGPT would.
-
-              Format your response as JSON:
-              {
-                "explanation": "Clear, comprehensive explanation of the topic (2-3 sentences)",
-                "keyPoints": [
-                  "Important point 1",
-                  "Important point 2",
-                  "Important point 3"
-                ],
-                "useCase": "When and why this is used, with examples",
-                "learnMore": [
-                  "Specific resource or next step 1",
-                  "Specific resource or next step 2"
-                ]
-              }
-
-              Be informative, accurate, and helpful. Provide practical information.
-              Return ONLY valid JSON.`
-            },
-            {
-              role: 'user',
-              content: `What is ${keyword}? Explain it clearly and comprehensively.`
-            }
-          ],
-          temperature: 0.5,
-          max_tokens: 500
-        })
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`❌ AI explanation failed for ${keyword}:`, response.status);
-        console.error('Error details:', errorText);
-        console.error('API URL:', this.CEREBRAS_API_URL);
-        console.error('Model:', 'gpt-oss-120b');
-        return;
-      }
-
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content;
-
-      if (content) {
-        console.log(`✅ AI raw response for ${keyword}:`, content);
-
-        try {
-          const cleanContent = content.replace(/```json\n?|\n?```/g, '').trim();
-          console.log(`🧹 Cleaned content for ${keyword}:`, cleanContent);
-
-          const aiResponse = JSON.parse(cleanContent);
-          console.log(`📦 Parsed response for ${keyword}:`, aiResponse);
-
-          const card = {
-            id: Date.now() + Math.random(),
-            topic: keyword,
-            timestamp: new Date().toLocaleTimeString(),
-            summary: aiResponse.explanation,
-            keyPoints: aiResponse.keyPoints || [],
-            useCase: aiResponse.useCase,
-            resources: aiResponse.learnMore || [],
-            expanded: false,
-            isAutoGenerated: true // Mark as auto-generated from conversation
-          };
-
-          console.log(`📦 Card object created for ${keyword}:`, card);
-          this.addCard(card);
-          console.log(`✅ AI explanation card added for: ${keyword}`);
-        } catch (parseError) {
-          console.error(`❌ Failed to parse AI response for ${keyword}:`, parseError);
-          console.error('Raw content that failed:', content);
-        }
+      if (response.wasInMeeting) {
+        fullAnswer = `📍 **From the Meeting:**\n${response.meetingAnswer}\n\n`;
+        fullAnswer += `📚 **General Knowledge:**\n${response.generalAnswer}`;
       } else {
-        console.error(`❌ No content in AI response for ${keyword}`);
+        fullAnswer = `ℹ️ **Note:** This topic was not discussed in the meeting.\n\n`;
+        fullAnswer += `📚 **General Answer:**\n${response.generalAnswer}`;
       }
 
-    } catch (error) {
-      console.error(`❌ Failed to generate AI explanation for ${keyword}:`, error);
-    }
-  }
-
-  /**
-   * OLD: Generate contextual information card using Cerebras + Llama (DEPRECATED)
-   */
-  async generateContextualCard(topic) {
-    try {
-      console.log(`Generating contextual card for: ${topic}`);
-      
-      // Use Cerebras API to generate detailed information
-      const response = await fetch(this.CEREBRAS_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.CEREBRAS_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'gpt-oss-120b',
-          messages: [
-            {
-              role: 'system',
-              content: `You are an expert assistant providing detailed, practical contextual information in English.
-
-              When given a topic (which may be in Hindi or English), provide comprehensive information in this EXACT JSON format:
-              {
-                "summary": "A clear 2-3 sentence explanation of what this topic is and why it matters",
-                "keyPoints": [
-                  "First important point or feature",
-                  "Second important point or feature", 
-                  "Third important point or feature"
-                ],
-                "useCase": "Specific practical scenarios where this is used or relevant, with concrete examples",
-                "resources": [
-                  "Specific resource, tool, or reference (not generic)",
-                  "Another specific resource or next step",
-                  "Third specific resource or learning material"
-                ]
-              }
-
-              IMPORTANT: Input may be in Hindi (Devanagari script) or English. Understand both, but ALWAYS respond in English only.
-
-              Guidelines:
-              - Be specific and practical, not generic
-              - Include real-world applications and examples
-              - Provide actionable information
-              - For technical topics: explain benefits, use cases, and getting started steps
-              - For places: include key attractions, best times to visit, practical tips
-              - For concepts: explain clearly with real examples
-              - Resources should be specific (actual tools, websites, or actions), not vague suggestions
-              - ALL responses must be in English, regardless of input language
-              
-              Return ONLY valid JSON, no markdown formatting.`
-            },
-            {
-              role: 'user',
-              content: `Provide detailed, practical information about (may be in Hindi or English): ${topic}`
-            }
-          ],
-          temperature: 0.5,
-          max_tokens: 600
-        })
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error(`Cerebras API error for ${topic}:`, response.status, errorText);
-        throw new Error(`Cerebras API error: ${response.status}`);
-      }
-
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content;
-      
-      if (content) {
-        console.log(`Cerebras response for ${topic}:`, content);
-        const cleanContent = content.replace(/```json\n?|\n?```/g, '').trim();
-        const cardData = JSON.parse(cleanContent);
-        
-        const card = {
-          id: Date.now() + Math.random(), // Ensure unique IDs
-          topic: topic,
-          timestamp: new Date().toLocaleTimeString(),
-          summary: cardData.summary,
-          keyPoints: cardData.keyPoints || [],
-          useCase: cardData.useCase,
-          resources: cardData.resources || [],
-          expanded: false
-        };
-        
-        this.addCard(card);
-      }
-      
-    } catch (error) {
-      console.error(`Failed to generate card for ${topic}:`, error);
-    }
-  }
-
-  /**
-   * Add demo card with predefined information
-   */
-  addDemoCard(topic) {
-    const demoCards = {
-      'Docker': {
-        summary: 'Docker is a platform for developing, shipping, and running applications in containers. It packages applications with all dependencies into standardized units.',
-        keyPoints: [
-          'Containerization platform for consistent environments',
-          'Lightweight alternative to virtual machines',
-          'Simplifies deployment and scaling'
-        ],
-        useCase: 'Use Docker when you need consistent development and production environments, microservices architecture, or simplified deployment workflows.',
-        resources: [
-          'Official Docker Documentation',
-          'Docker Hub for container images',
-          'Docker Compose for multi-container apps'
-        ]
-      },
-      'Kubernetes': {
-        summary: 'Kubernetes is an open-source container orchestration platform that automates deployment, scaling, and management of containerized applications.',
-        keyPoints: [
-          'Automated container orchestration and scaling',
-          'Self-healing and load balancing capabilities',
-          'Declarative configuration and version control'
-        ],
-        useCase: 'Use Kubernetes for managing large-scale containerized applications, automating deployments, and ensuring high availability.',
-        resources: [
-          'Kubernetes Official Docs',
-          'kubectl command-line tool',
-          'Helm for package management'
-        ]
-      },
-      'React': {
-        summary: 'React is a JavaScript library for building user interfaces, particularly single-page applications. It uses a component-based architecture and virtual DOM.',
-        keyPoints: [
-          'Component-based UI development',
-          'Virtual DOM for efficient updates',
-          'Large ecosystem and community support'
-        ],
-        useCase: 'Use React for building interactive, dynamic web applications with reusable components and efficient rendering.',
-        resources: [
-          'React Official Documentation',
-          'Create React App starter',
-          'React DevTools for debugging'
-        ]
-      },
-      'PostgreSQL': {
-        summary: 'PostgreSQL is a powerful, open-source relational database system with strong ACID compliance and advanced features like JSON support.',
-        keyPoints: [
-          'ACID-compliant relational database',
-          'Advanced features: JSON, full-text search',
-          'Highly extensible and standards-compliant'
-        ],
-        useCase: 'Use PostgreSQL for applications requiring complex queries, data integrity, and advanced database features.',
-        resources: [
-          'PostgreSQL Official Docs',
-          'pgAdmin management tool',
-          'PostGIS for spatial data'
-        ]
-      },
-      'Python': {
-        summary: 'Python is a high-level, interpreted programming language known for its simplicity and readability. Widely used in web development, data science, and automation.',
-        keyPoints: [
-          'Clean, readable syntax',
-          'Extensive standard library and packages',
-          'Versatile: web, data science, AI, automation'
-        ],
-        useCase: 'Use Python for rapid development, data analysis, machine learning, web backends, and scripting tasks.',
-        resources: [
-          'Python Official Documentation',
-          'PyPI package repository',
-          'Popular frameworks: Django, Flask, FastAPI'
-        ]
-      }
-    };
-
-    const cardTemplate = demoCards[topic] || {
-      summary: `${topic} is a technology or concept mentioned in your meeting. This is a placeholder for detailed information.`,
-      keyPoints: [
-        'Key feature or concept 1',
-        'Key feature or concept 2',
-        'Key feature or concept 3'
-      ],
-      useCase: `Use ${topic} when you need specific functionality in your project.`,
-      resources: [
-        'Official documentation',
-        'Community resources',
-        'Tutorials and guides'
-      ]
-    };
-
-    const card = {
-      id: Date.now(),
-      topic: topic,
-      timestamp: new Date().toLocaleTimeString(),
-      summary: cardTemplate.summary,
-      keyPoints: cardTemplate.keyPoints,
-      useCase: cardTemplate.useCase,
-      resources: cardTemplate.resources,
-      expanded: false
-    };
-
-    this.addCard(card);
-  }
-
-  /**
-   * Add new card and notify content script
-   */
-  addCard(card) {
-    this.contextualCards.push(card);
-    console.log('📦 New contextual card added:', card.topic);
-    console.log('📦 Total cards:', this.contextualCards.length);
-    console.log('📦 Broadcasting to content script...');
-
-    this.broadcastToContentScript('NEW_CARDS', {
-      cards: this.contextualCards
-    });
-  }
-
-  /**
-   * Send message to content script in all Meet tabs
-   */
-  async broadcastToContentScript(type, data = {}) {
-    try {
-      const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
-      console.log(`📡 Broadcasting ${type} to ${tabs.length} Meet tab(s)`);
-
-      if (tabs.length === 0) {
-        console.warn('⚠️ No Google Meet tabs found to broadcast to!');
-      }
-
-      for (const tab of tabs) {
-        console.log(`📡 Sending to tab ${tab.id}:`, type, 'with', data.cards?.length || 0, 'cards');
-        this.sendToContentScript(tab.id, type, data);
-      }
-    } catch (error) {
-      console.error('Failed to broadcast to content script:', error);
-    }
-  }
-
-  /**
-   * Send message to specific tab's content script
-   */
-  sendToContentScript(tabId, type, data = {}) {
-    try {
-      chrome.tabs.sendMessage(tabId, { type, ...data }, (response) => {
-        if (chrome.runtime.lastError) {
-          console.error(`❌ Failed to send ${type} to tab ${tabId}:`, chrome.runtime.lastError.message);
-        } else {
-          console.log(`✅ Message ${type} sent successfully to tab ${tabId}`);
-        }
-      });
-    } catch (error) {
-      console.error('Failed to send message to content script:', error);
-    }
-  }
-
-  /**
-   * Reset extension state
-   */
-  resetState() {
-    this.isRecording = false;
-    this.contextualCards = [];
-    this.transcriptBuffer = '';
-    this.lastProcessedTime = 0;
-    this.processedTopics.clear();
-    
-    if (this.currentStream) {
-      this.currentStream.getTracks().forEach(track => track.stop());
-      this.currentStream = null;
-    }
-    
-    if (this.demoInterval) {
-      clearInterval(this.demoInterval);
-      this.demoInterval = null;
-    }
-  }
-
-  /**
-   * Handle chatbox question - works like normal AI with meeting context awareness
-   */
-  async handleChatboxQuestion(question, meetingContext) {
-    try {
-      console.log('🤖 Processing chatbox question:', question);
-
-      // Use AI to answer - it will use meeting context if relevant, otherwise answer generally
-      const response = await fetch(this.CEREBRAS_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.CEREBRAS_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'gpt-oss-120b',
-          messages: [
-            {
-              role: 'system',
-              content: `You are a helpful AI assistant like ChatGPT. Answer questions intelligently.
-
-              IMPORTANT:
-              - If meeting context is provided and the question relates to it, use that context in your answer
-              - If the question is general (like "what is docker?", "explain AI", etc.), answer it normally without needing meeting context
-              - Be helpful, accurate, and comprehensive
-              - If asked about something from the meeting (like "what did John say?", "when is the deadline?"), use the meeting context
-              - If meeting context is empty or irrelevant, just answer the question normally
-
-              Format response as JSON:
-              {
-                "answer": "Direct, comprehensive answer to the question",
-                "usedMeetingContext": true/false,
-                "additionalInfo": ["Related point 1", "Related point 2", "Related point 3"]
-              }
-
-              Return ONLY valid JSON.`
-            },
-            {
-              role: 'user',
-              content: meetingContext
-                ? `Meeting Context: "${meetingContext}"\n\nQuestion: ${question}\n\nAnswer the question. Use meeting context if relevant, otherwise answer generally.`
-                : `Question: ${question}\n\nAnswer this question comprehensively.`
-            }
-          ],
-          temperature: 0.6,
-          max_tokens: 600
-        })
-      });
-
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('❌ Chatbox AI error:', response.status);
-        console.error('Error details:', errorText);
-        console.error('API URL:', this.CEREBRAS_API_URL);
-        console.error('Model:', 'gpt-oss-120b');
-        console.error('API Key configured:', this.CEREBRAS_API_KEY ? 'Yes' : 'No');
-        console.error('Question:', question);
-        throw new Error(`AI API error: ${response.status} - ${errorText.substring(0, 100)}`);
-      }
-
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content;
-
-      if (content) {
-        console.log('✅ AI raw response:', content);
-
-        try {
-          const cleanContent = content.replace(/```json\n?|\n?```/g, '').trim();
-          console.log('🧹 Cleaned content:', cleanContent);
-
-          const aiResponse = JSON.parse(cleanContent);
-          console.log('📦 Parsed response:', aiResponse);
-
-          const card = {
-            id: Date.now() + Math.random(),
-            topic: `💬 ${question}`,
-            timestamp: new Date().toLocaleTimeString(),
-            summary: aiResponse.answer,
-            keyPoints: aiResponse.additionalInfo || [],
-            useCase: aiResponse.usedMeetingContext
-              ? '✅ Answer based on meeting context'
-              : '💡 General knowledge answer',
-            resources: ['Ask another question in the chatbox'],
-            expanded: true,
-            isChatboxAnswer: true
-          };
-
-          this.addCard(card);
-          console.log('✅ Chatbox answer card added');
-        } catch (parseError) {
-          console.error('❌ Failed to parse AI response:', parseError);
-          console.error('Raw content that failed to parse:', content);
-          throw new Error(`JSON parse error: ${parseError.message}`);
-        }
-      } else {
-        console.error('❌ No content in AI response');
-        console.error('Full response data:', data);
-        throw new Error('No content in AI response');
-      }
-
-    } catch (error) {
-      console.error('❌ Failed to answer chatbox question:', error);
-      console.error('Error stack:', error.stack);
-
-      // Fallback card with actual error message
-      const fallbackCard = {
-        id: Date.now(),
+      const card = {
+        id: Date.now() + Math.random(),
         topic: `💬 ${question}`,
         timestamp: new Date().toLocaleTimeString(),
-        summary: `Sorry, I encountered an error: ${error.message}`,
-        keyPoints: [
-          'Check your internet connection',
-          'Verify API keys are configured correctly',
-          `Error details: ${error.message.substring(0, 100)}`
-        ],
-        useCase: 'Error occurred while processing your question',
-        resources: ['Try asking again', 'Check browser console for details'],
+        summary: fullAnswer,
+        keyPoints: response.additionalInfo || [],
+        useCase: response.wasInMeeting
+          ? '✅ Answered from meeting context + general knowledge'
+          : '💡 General knowledge (not in meeting)',
+        resources: ['Ask another question in the chatbox'],
         expanded: true,
         isChatboxAnswer: true
       };
 
-      this.addCard(fallbackCard);
+      this.addCard(card);
+      console.log('✅ Chatbox answered with Gemini (meeting:', response.wasInMeeting, ')');
+
+    } catch (error) {
+      console.error('Failed to answer question:', error);
+      this.addErrorCard(question, error.message);
     }
   }
 
   /**
-   * OLD: Handle instant question with meeting context (DEPRECATED - Wake word removed)
+   * NEW: Handle command palette question (from any page)
+   * Now with current page context and cross-tab memory!
    */
-  async handleInstantQuestion(question, meetingContext, isFromWakeWord = false, isFromChatbox = false) {
+  async handleCommandPaletteQuestion(question, tab, currentPageContext, currentPageUrl, currentPageTitle) {
+    if (!this.geminiClient) {
+      console.error('Gemini API not configured');
+      return;
+    }
+
     try {
-      console.log('🤔 Generating instant response for question:', question);
-      console.log('🎯 Source: Wake Word =', isFromWakeWord, '| Chatbox =', isFromChatbox);
+      console.log('🎯 Answering command palette question:', question);
+      console.log('📄 Current page:', currentPageTitle);
 
-      const response = await fetch(this.CEREBRAS_API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${this.CEREBRAS_API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model: 'gpt-oss-120b',
-          messages: [
-            {
-              role: 'system',
-              content: `You are an intelligent meeting assistant. You have access to the meeting transcript and can answer questions about the discussion.
+      // Store current page context for future use
+      await this.storeTabContext(tab.id, currentPageUrl, currentPageTitle, currentPageContext);
 
-              The meeting transcript and questions may be in Hindi (Devanagari script) or English. You must understand both languages.
+      // Retrieve context from all recent tabs (cross-tab memory)
+      const recentTabsContext = await this.getRecentTabsContext();
+      console.log('🧠 Retrieved context from', recentTabsContext.length, 'recent tabs');
 
-              IMPORTANT: ALWAYS respond in English only, regardless of the input language. If the question is in Hindi, understand it and answer in English.
+      // Build comprehensive context
+      let contextString = '';
 
-              Provide helpful, accurate answers based on the meeting context. If the answer isn't in the context, say so and provide general helpful information.
+      // Add current page context
+      if (currentPageContext) {
+        contextString += `\n=== CURRENT PAGE CONTEXT ===\n${currentPageContext}\n`;
+      }
 
-              Format your response as JSON:
-              {
-                "answer": "Direct answer to the question in English",
-                "context": "Relevant information from the meeting that supports this answer (in English)",
-                "suggestions": ["Related point 1 in English", "Related point 2 in English"]
-              }
+      // Add recent tabs context
+      if (recentTabsContext.length > 0) {
+        contextString += `\n=== RECENTLY VIEWED PAGES ===\n`;
+        recentTabsContext.forEach((ctx, index) => {
+          // Show full content for recent tabs (already limited to 10000 chars when stored)
+          contextString += `\nPage ${index + 1}: ${ctx.title}\nURL: ${ctx.url}\nContent: ${ctx.content}\n`;
+        });
+      }
 
-              Be concise but thorough. Return ONLY valid JSON. All responses must be in English.`
-            },
-            {
-              role: 'user',
-              content: `Meeting Context (may be in Hindi or English): "${meetingContext}"
+      const prompt = `You are a helpful AI assistant with access to the user's browsing context.
 
-              Question (may be in Hindi or English): ${question}
+USER'S CONTEXT:
+${contextString}
 
-              Remember: Understand the question in any language, but respond in English only.`
-            }
-          ],
-          temperature: 0.4,
-          max_tokens: 500
-        })
+Question: ${question}
+
+IMPORTANT INSTRUCTIONS:
+1. Use the context from the current page and recently viewed pages to answer the question
+2. If the answer is in the context, refer to it specifically (e.g., "From the email you were reading...")
+3. If not in context, provide general knowledge answer
+4. Keep answer brief but informative (2-4 sentences)
+5. Return ONLY valid JSON (no markdown, no extra text)
+
+Return JSON:
+{
+  "answer": "Answer using context when available, otherwise general knowledge",
+  "usedContext": true/false,
+  "contextSource": "current page / previous tab / general knowledge",
+  "additionalInfo": ["helpful point 1", "helpful point 2", "helpful point 3"]
+}`;
+
+      const responseText = await this.geminiClient.generateContent(prompt, {
+        temperature: 0.7,
+        maxOutputTokens: 800
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        console.error('Cerebras API error for question:', response.status, errorText);
-        throw new Error(`Cerebras API error: ${response.status}`);
-      }
+      const response = this.geminiClient.parseJSON(responseText);
 
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content;
+      console.log('✅ Command palette answer generated (used context:', response.usedContext, ')');
 
-      if (content) {
-        console.log('✅ Instant response generated:', content);
-        const cleanContent = content.replace(/```json\n?|\n?```/g, '').trim();
-        const responseData = JSON.parse(cleanContent);
-
-        // Create instant response card with visual differentiation
-        const card = {
-          id: Date.now() + Math.random(),
-          topic: `${isFromChatbox ? '💬' : '🎤'} Q: ${question}`,
-          timestamp: new Date().toLocaleTimeString(),
-          summary: responseData.answer,
-          keyPoints: responseData.suggestions || [],
-          useCase: responseData.context || 'Based on the current meeting discussion',
-          resources: isFromChatbox
-            ? ['Type another question in the chatbox']
-            : ['Ask another question by saying "Hey SyncUp"'],
-          expanded: true, // Auto-expand instant responses
-          isQuestionAnswer: true, // Mark as question answer (not regular card)
-          isFromWakeWord: isFromWakeWord,
-          isFromChatbox: isFromChatbox
-        };
-
-        this.addCard(card);
-        console.log('✅ Question answer card added');
-      }
+      // Send answer back to content script to display
+      chrome.tabs.sendMessage(tab.id, {
+        type: 'COMMAND_PALETTE_ANSWER',
+        question: question,
+        answer: response.answer,
+        additionalInfo: response.additionalInfo || [],
+        usedContext: response.usedContext,
+        contextSource: response.contextSource
+      });
 
     } catch (error) {
-      console.error('Failed to generate instant response:', error);
+      console.error('Failed to answer command palette question:', error);
 
-      // Fallback card if API fails
-      const fallbackCard = {
-        id: Date.now(),
-        topic: `${isFromChatbox ? '💬' : '🎤'} Q: ${question}`,
-        timestamp: new Date().toLocaleTimeString(),
-        summary: 'I heard your question but encountered an error generating a response. Please try again.',
-        keyPoints: ['Make sure you have a stable internet connection', 'Try rephrasing your question'],
-        useCase: 'Error occurred while processing your question',
-        resources: isFromChatbox
-          ? ['Type another question in the chatbox']
-          : ['Say "Hey SyncUp" to try again'],
-        expanded: true,
-        isQuestionAnswer: true,
-        isFromWakeWord: isFromWakeWord,
-        isFromChatbox: isFromChatbox
-      };
-
-      this.addCard(fallbackCard);
+      // Send error back to content script
+      chrome.tabs.sendMessage(tab.id, {
+        type: 'COMMAND_PALETTE_ANSWER',
+        question: question,
+        answer: `Error: ${error.message}`,
+        additionalInfo: []
+      });
     }
+  }
+
+  /**
+   * Store tab context for cross-tab memory
+   */
+  async storeTabContext(tabId, url, title, content) {
+    try {
+      const timestamp = Date.now();
+
+      // Get existing contexts
+      const result = await chrome.storage.local.get(['tab_contexts']);
+      const contexts = result.tab_contexts || [];
+
+      // Add new context
+      contexts.push({
+        tabId,
+        url,
+        title,
+        content: content.substring(0, 10000), // Increased from 5000 to capture full emails
+        timestamp
+      });
+
+      // Keep only last 10 tabs (to save storage)
+      const recentContexts = contexts.slice(-10);
+
+      // Save back to storage
+      await chrome.storage.local.set({ tab_contexts: recentContexts });
+
+      console.log('💾 Stored context for:', title);
+    } catch (error) {
+      console.error('Failed to store tab context:', error);
+    }
+  }
+
+  /**
+   * Get recent tabs context for cross-tab memory
+   */
+  async getRecentTabsContext() {
+    try {
+      const result = await chrome.storage.local.get(['tab_contexts']);
+      const contexts = result.tab_contexts || [];
+
+      // Return contexts from last 5 minutes, max 5 tabs
+      const fiveMinutesAgo = Date.now() - (5 * 60 * 1000);
+      const recentContexts = contexts
+        .filter(ctx => ctx.timestamp > fiveMinutesAgo)
+        .slice(-5); // Last 5 tabs
+
+      return recentContexts;
+    } catch (error) {
+      console.error('Failed to get recent tabs context:', error);
+      return [];
+    }
+  }
+
+  /**
+   * NEW: Handle content detected from universal tabs
+   */
+  async handleContentDetected(message, tab) {
+    if (!this.settings.enableUniversalContext) return;
+
+    const { text, platform } = message;
+
+    // Update tab context
+    this.activeTabContexts.set(tab.id, {
+      tabId: tab.id,
+      url: tab.url,
+      platform,
+      lastText: text,
+      timestamp: Date.now()
+    });
+
+    // Update side panel if open
+    this.updateSidePanel();
+  }
+
+  /**
+   * NEW: Generate context card for any topic
+   */
+  async generateContextCard(topic) {
+    return await this.generateContextCardWithGemini(topic);
+  }
+
+  /**
+   * Add card and broadcast
+   */
+  addCard(card) {
+    this.contextualCards.push(card);
+    console.log('📦 Card added:', card.topic);
+    this.broadcastToContentScript('NEW_CARDS', { cards: this.contextualCards });
+    this.updateSidePanel();
+  }
+
+  /**
+   * Add error card
+   */
+  addErrorCard(question, errorMessage) {
+    const card = {
+      id: Date.now(),
+      topic: `💬 ${question}`,
+      timestamp: new Date().toLocaleTimeString(),
+      summary: `Error: ${errorMessage}`,
+      keyPoints: ['Check API key configuration', 'Try again'],
+      useCase: 'Error occurred',
+      resources: [],
+      expanded: true,
+      isChatboxAnswer: true
+    };
+    this.addCard(card);
+  }
+
+  /**
+   * EXISTING: Broadcast to Google Meet tabs (PRESERVED)
+   */
+  async broadcastToContentScript(type, data = {}) {
+    try {
+      const tabs = await chrome.tabs.query({ url: 'https://meet.google.com/*' });
+      for (const tab of tabs) {
+        this.sendToContentScript(tab.id, type, data);
+      }
+    } catch (error) {
+      console.error('Failed to broadcast:', error);
+    }
+  }
+
+  /**
+   * Send message to content script
+   */
+  sendToContentScript(tabId, type, data = {}) {
+    chrome.tabs.sendMessage(tabId, { type, ...data }, (response) => {
+      if (chrome.runtime.lastError) {
+        console.error('Send error:', chrome.runtime.lastError.message);
+      }
+    });
+  }
+
+  /**
+   * NEW: Open command palette
+   */
+  async openCommandPalette() {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs[0]) {
+      chrome.tabs.sendMessage(tabs[0].id, { type: 'OPEN_COMMAND_PALETTE' });
+    }
+  }
+
+  /**
+   * NEW: Open side panel
+   */
+  async openSidePanel(tab) {
+    try {
+      await chrome.sidePanel.open({ tabId: tab.id });
+    } catch (error) {
+      console.error('Failed to open side panel:', error);
+    }
+  }
+
+  /**
+   * NEW: Update side panel with latest data
+   */
+  updateSidePanel() {
+    // Send update to side panel
+    chrome.runtime.sendMessage({
+      type: 'UPDATE_SIDE_PANEL',
+      data: {
+        contextCards: this.contextualCards,
+        actionItems: this.actionItems,
+        activeContexts: Array.from(this.activeTabContexts.values())
+      }
+    });
+  }
+
+  /**
+   * NEW: Handle tab activated
+   */
+  async handleTabActivated(activeInfo) {
+    // Could implement context switching logic here
+    console.log('Tab activated:', activeInfo.tabId);
+  }
+
+  /**
+   * NEW: Handle tab updated
+   */
+  async handleTabUpdated(tabId, tab) {
+    console.log('Tab updated:', tab.url);
+  }
+
+  /**
+   * NEW: Update settings
+   */
+  async updateSettings(newSettings) {
+    this.settings = { ...this.settings, ...newSettings };
+    await chrome.storage.sync.set({ syncup_settings: this.settings });
+
+    // Reinitialize Gemini if API key changed
+    if (newSettings.geminiApiKey) {
+      await this.initializeGemini();
+    }
+
+    console.log('⚙️ Settings updated');
+  }
+
+  /**
+   * NEW: Test Gemini API key
+   */
+  async testGeminiAPIKey(apiKey) {
+    try {
+      const testClient = { ...this.geminiClient, apiKey };
+      await testClient.generateContent('Say hello', { maxOutputTokens: 50 });
+      return { valid: true, message: 'API key is valid' };
+    } catch (error) {
+      return { valid: false, message: error.message };
+    }
+  }
+
+  /**
+   * NEW: Cleanup old data
+   */
+  async cleanupOldData() {
+    if (!this.settings.autoDeleteHistory) return;
+
+    const cutoffTime = Date.now() - (this.settings.historyRetentionHours * 60 * 60 * 1000);
+
+    // Clean up old conversation history
+    this.conversationHistory = this.conversationHistory.filter(
+      item => item.timestamp > cutoffTime
+    );
+
+    console.log('🗑️ Old data cleaned up');
+  }
+
+  /**
+   * NEW: Show welcome notification
+   */
+  showWelcomeNotification() {
+    chrome.notifications.create({
+      type: 'basic',
+      iconUrl: 'icons/icon128.png',
+      title: 'SyncUp Universal Ready!',
+      message: 'Press Ctrl+K (Cmd+K on Mac) to open command palette. Configure your Gemini API key in settings.'
+    });
   }
 }
 
-// Initialize the background service
-new SyncUpBackground();
+// Initialize
+const syncup = new SyncUpUniversal();

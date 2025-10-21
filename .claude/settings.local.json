@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"https://generativelanguage.googleapis.com/v1/models?key=AIzaSyClTRj0FVD-fDtuD47ZyGS0Mm2pgU4bRGg\")",
+      "Bash(curl -s -X POST \"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=AIzaSyClTRj0FVD-fDtuD47ZyGS0Mm2pgU4bRGg\" -H \"Content-Type: application/json\" -d '{\"\"\"\"contents\"\"\"\":[{\"\"\"\"parts\"\"\"\":[{\"\"\"\"text\"\"\"\":\"\"\"\"Say hello\"\"\"\"}]}]}')",
+      "Bash(dir \"C:\\Users\\awnee\\OneDrive\\Desktop\\chrome_hackathon\\Syncup\\icons\")",
+      "Bash(find . -name \"*.js\" -type f -exec grep -l \"ctrlKey.*&&.*key.*===.*[''\"\"]k[''\"\"]\" {} ;)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
