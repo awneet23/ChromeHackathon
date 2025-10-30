@@ -19,6 +19,11 @@ class SyncUpSidebar {
     this.currentLanguage = 'en-US'; // Current recognition language
     this.alwaysOnCaptionObserver = null; // Always-on caption capture for chatbox
 
+    // Prompt API integration
+    this.promptApiHandler = null;
+    this.currentApiMode = 'gemini-api'; // Will be updated from background
+    this.promptApiStatus = 'unknown';
+
     this.init();
   }
 
@@ -39,8 +44,65 @@ class SyncUpSidebar {
       return true; // Keep message channel open for async responses
     });
 
+    // Initialize Prompt API handler
+    this.initializePromptAPI();
+
     // Observer to re-inject if Meet UI changes
     this.setupMutationObserver();
+  }
+
+  /**
+   * Initialize Prompt API handler and check availability
+   */
+  async initializePromptAPI() {
+    console.log('🔍 [Meet Content] Initializing Prompt API...');
+
+    try {
+      // Load the Prompt API handler if available
+      if (typeof PromptAPIHandler !== 'undefined') {
+        this.promptApiHandler = new PromptAPIHandler();
+        console.log('✅ [Meet Content] Prompt API handler created');
+
+        // Check availability
+        const availability = await this.promptApiHandler.checkAvailability();
+        console.log('📊 [Meet Content] Prompt API availability:', availability);
+
+        // Report status to background
+        chrome.runtime.sendMessage({
+          type: 'PROMPT_API_STATUS',
+          status: availability.status,
+          available: availability.available
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.log('ℹ️ [Meet Content] Background not ready yet:', chrome.runtime.lastError.message);
+          } else {
+            console.log('✅ [Meet Content] Prompt API status sent to background');
+          }
+        });
+      } else {
+        console.warn('⚠️ [Meet Content] PromptAPIHandler not loaded - will use fallback');
+
+        // Report unavailable status to background
+        chrome.runtime.sendMessage({
+          type: 'PROMPT_API_STATUS',
+          status: 'no',
+          available: false
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.log('ℹ️ [Meet Content] Background not ready yet');
+          }
+        });
+      }
+    } catch (error) {
+      console.error('❌ [Meet Content] Error initializing Prompt API:', error);
+
+      // Report error to background
+      chrome.runtime.sendMessage({
+        type: 'PROMPT_API_STATUS',
+        status: 'error',
+        available: false
+      });
+    }
   }
 
   /**
@@ -191,12 +253,64 @@ class SyncUpSidebar {
         break;
       
       case 'GET_SIDEBAR_STATUS':
-        sendResponse({ 
+        sendResponse({
           isInjected: this.isInjected,
           isRecording: this.isRecording,
           cardsCount: this.contextualCards.length
         });
         break;
+
+      case 'EXECUTE_PROMPT_API':
+        // Background is requesting us to execute a prompt using Prompt API
+        console.log('📥 [Meet Content] Received EXECUTE_PROMPT_API request');
+        this.executePromptAPI(message).then((result) => {
+          // Send result back to background
+          chrome.runtime.sendMessage({
+            type: 'PROMPT_API_RESULT',
+            requestId: message.requestId,
+            result: result
+          });
+        });
+        sendResponse({ success: true });
+        break;
+
+      case 'API_STATUS_UPDATE':
+        // Background is broadcasting API status update
+        console.log('📊 [Meet Content] API status update:', message.currentApiMode);
+        this.currentApiMode = message.currentApiMode;
+        this.promptApiStatus = message.promptApiStatus;
+        sendResponse({ success: true });
+        break;
+    }
+  }
+
+  /**
+   * Execute prompt using Prompt API
+   */
+  async executePromptAPI(request) {
+    console.log('🚀 [Meet Content] Executing Prompt API request');
+    console.log('📝 [Meet Content] Prompt preview:', request.prompt.substring(0, 100) + '...');
+
+    try {
+      // Check if we have a Prompt API handler
+      if (!this.promptApiHandler) {
+        console.warn('⚠️ [Meet Content] No Prompt API handler available');
+        return { success: false, error: 'Prompt API handler not initialized' };
+      }
+
+      // Execute the prompt
+      const result = await this.promptApiHandler.prompt(request.prompt, request.options);
+
+      if (result.success) {
+        console.log('✅ [Meet Content] Prompt API execution successful');
+        return result;
+      } else {
+        console.error('❌ [Meet Content] Prompt API execution failed:', result.error);
+        return result;
+      }
+    } catch (error) {
+      console.error('❌ [Meet Content] Error executing Prompt API:', error);
+      return { success: false, error: error.message };
     }
   }
 

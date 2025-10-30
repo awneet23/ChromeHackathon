@@ -11,6 +11,11 @@ class UniversalSyncUp {
     this.lastProcessedTexts = new Set();
     this.contentObserver = null;
 
+    // Prompt API integration
+    this.promptApiHandler = null;
+    this.currentApiMode = 'gemini-api'; // Will be updated from background
+    this.promptApiStatus = 'unknown';
+
     console.log('🌐 SyncUp Universal loaded on:', this.platform?.name || 'Unknown platform');
 
     this.init();
@@ -44,10 +49,67 @@ class UniversalSyncUp {
       return true;
     });
 
+    // Initialize Prompt API handler
+    this.initializePromptAPI();
+
     // Setup smart compose (optional feature)
     // this.setupSmartCompose();
 
     console.log('✅ SyncUp Universal initialized');
+  }
+
+  /**
+   * Initialize Prompt API handler and check availability
+   */
+  async initializePromptAPI() {
+    console.log('🔍 [Universal Content] Initializing Prompt API...');
+
+    try {
+      // Load the Prompt API handler if available
+      if (typeof PromptAPIHandler !== 'undefined') {
+        this.promptApiHandler = new PromptAPIHandler();
+        console.log('✅ [Universal Content] Prompt API handler created');
+
+        // Check availability
+        const availability = await this.promptApiHandler.checkAvailability();
+        console.log('📊 [Universal Content] Prompt API availability:', availability);
+
+        // Report status to background
+        chrome.runtime.sendMessage({
+          type: 'PROMPT_API_STATUS',
+          status: availability.status,
+          available: availability.available
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.log('ℹ️ [Universal Content] Background not ready yet:', chrome.runtime.lastError.message);
+          } else {
+            console.log('✅ [Universal Content] Prompt API status sent to background');
+          }
+        });
+      } else {
+        console.warn('⚠️ [Universal Content] PromptAPIHandler not loaded - will use fallback');
+
+        // Report unavailable status to background
+        chrome.runtime.sendMessage({
+          type: 'PROMPT_API_STATUS',
+          status: 'no',
+          available: false
+        }, (response) => {
+          if (chrome.runtime.lastError) {
+            console.log('ℹ️ [Universal Content] Background not ready yet');
+          }
+        });
+      }
+    } catch (error) {
+      console.error('❌ [Universal Content] Error initializing Prompt API:', error);
+
+      // Report error to background
+      chrome.runtime.sendMessage({
+        type: 'PROMPT_API_STATUS',
+        status: 'error',
+        available: false
+      });
+    }
   }
 
   /**
@@ -657,8 +719,60 @@ class UniversalSyncUp {
         sendResponse({ success: true });
         break;
 
+      case 'EXECUTE_PROMPT_API':
+        // Background is requesting us to execute a prompt using Prompt API
+        console.log('📥 [Universal Content] Received EXECUTE_PROMPT_API request');
+        this.executePromptAPI(message).then((result) => {
+          // Send result back to background
+          chrome.runtime.sendMessage({
+            type: 'PROMPT_API_RESULT',
+            requestId: message.requestId,
+            result: result
+          });
+        });
+        sendResponse({ success: true });
+        break;
+
+      case 'API_STATUS_UPDATE':
+        // Background is broadcasting API status update
+        console.log('📊 [Universal Content] API status update:', message.currentApiMode);
+        this.currentApiMode = message.currentApiMode;
+        this.promptApiStatus = message.promptApiStatus;
+        sendResponse({ success: true });
+        break;
+
       default:
         sendResponse({ error: 'Unknown message type' });
+    }
+  }
+
+  /**
+   * Execute prompt using Prompt API
+   */
+  async executePromptAPI(request) {
+    console.log('🚀 [Universal Content] Executing Prompt API request');
+    console.log('📝 [Universal Content] Prompt preview:', request.prompt.substring(0, 100) + '...');
+
+    try {
+      // Check if we have a Prompt API handler
+      if (!this.promptApiHandler) {
+        console.warn('⚠️ [Universal Content] No Prompt API handler available');
+        return { success: false, error: 'Prompt API handler not initialized' };
+      }
+
+      // Execute the prompt
+      const result = await this.promptApiHandler.prompt(request.prompt, request.options);
+
+      if (result.success) {
+        console.log('✅ [Universal Content] Prompt API execution successful');
+        return result;
+      } else {
+        console.error('❌ [Universal Content] Prompt API execution failed:', result.error);
+        return result;
+      }
+    } catch (error) {
+      console.error('❌ [Universal Content] Error executing Prompt API:', error);
+      return { success: false, error: error.message };
     }
   }
 

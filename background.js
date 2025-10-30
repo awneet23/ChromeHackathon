@@ -26,6 +26,13 @@ class SyncUpUniversal {
     this.actionItems = [];
     this.settings = null;
 
+    // Prompt API state
+    this.promptApiAvailable = false;
+    this.promptApiStatus = 'unknown'; // 'readily', 'after-download', 'no', 'unknown'
+    this.currentApiMode = 'gemini-api'; // 'prompt-api' or 'gemini-api'
+    this.lastApiCheck = 0;
+    this.apiCheckInterval = 60000; // Check every 60 seconds
+
     this.init();
   }
 
@@ -310,6 +317,42 @@ class SyncUpUniversal {
           sendResponse({ success: true });
           break;
 
+        // ==== PROMPT API MESSAGES ====
+        case 'PROMPT_API_STATUS':
+          // Content script reporting Prompt API availability
+          console.log('📊 [Background] Prompt API status from tab:', message.status);
+          this.updatePromptApiStatus(message.status, message.available);
+          sendResponse({ success: true });
+          break;
+
+        case 'PROMPT_API_RESULT':
+          // Content script sending back Prompt API result
+          console.log('✅ [Background] Prompt API result received from tab');
+          // This will be handled by the promise waiting for it
+          sendResponse({ success: true });
+          break;
+
+        case 'GET_API_STATUS':
+          // Get current API mode and status
+          sendResponse({
+            currentApiMode: this.currentApiMode,
+            promptApiAvailable: this.promptApiAvailable,
+            promptApiStatus: this.promptApiStatus
+          });
+          break;
+
+        case 'GET_STATE':
+          // Side panel requesting current state
+          sendResponse({
+            success: true,
+            data: {
+              contextCards: this.contextualCards,
+              actionItems: this.actionItems,
+              activeContexts: Array.from(this.activeTabContexts.values())
+            }
+          });
+          break;
+
         default:
           console.warn('Unknown message type:', message.type);
           sendResponse({ error: 'Unknown message type' });
@@ -376,20 +419,23 @@ class SyncUpUniversal {
   }
 
   /**
-   * NEW: Process transcript using Gemini (replaces Cerebras)
+   * NEW: Process transcript using AI (Prompt API or Gemini API)
    */
   async processTranscriptWithGemini(transcript) {
-    if (!transcript.trim() || !this.geminiClient) return;
+    if (!transcript.trim()) return;
 
-    console.log('🤖 Processing transcript with Gemini...');
+    console.log('🤖 [Background] Processing transcript with AI...');
+    console.log('🎯 [Background] Current API mode:', this.currentApiMode);
 
     try {
       // Step 1: Extract keywords
       const keywordsPrompt = `Extract 1-3 important keywords from: "${transcript}"
 Return ONLY JSON array: ["keyword1", "keyword2"]`;
 
-      const keywordsText = await this.geminiClient.generateContent(keywordsPrompt);
-      const keywords = this.geminiClient.parseJSON(keywordsText);
+      const result = await this.generateContentUnified(keywordsPrompt);
+      console.log('✅ [Background] Keywords extracted using:', result.source);
+
+      const keywords = this.geminiClient.parseJSON(result.text);
 
       console.log('📋 Extracted keywords:', keywords);
 
@@ -407,10 +453,11 @@ Return ONLY JSON array: ["keyword1", "keyword2"]`;
   }
 
   /**
-   * NEW: Generate context card using Gemini
+   * NEW: Generate context card using AI (Prompt API or Gemini API)
    */
   async generateContextCardWithGemini(keyword) {
-    if (!this.geminiClient) return;
+    console.log('💡 [Background] Generating context card for:', keyword);
+    console.log('🎯 [Background] Current API mode:', this.currentApiMode);
 
     try {
       const prompt = `Provide concise information about "${keyword}".
@@ -425,8 +472,10 @@ Return JSON:
   "learnMore": ["resource1", "resource2"]
 }`;
 
-      const responseText = await this.geminiClient.generateContent(prompt);
-      const response = this.geminiClient.parseJSON(responseText);
+      const result = await this.generateContentUnified(prompt);
+      console.log('✅ [Background] Context card generated using:', result.source);
+
+      const response = this.geminiClient.parseJSON(result.text);
 
       const card = {
         id: Date.now() + Math.random(),
@@ -449,13 +498,11 @@ Return JSON:
   }
 
   /**
-   * NEW: Handle chatbox question using Gemini
+   * NEW: Handle chatbox question using AI (Prompt API or Gemini API)
    */
   async handleChatboxQuestionWithGemini(question, meetingContext) {
-    if (!this.geminiClient) {
-      this.addErrorCard(question, 'Gemini API not configured');
-      return;
-    }
+    console.log('💬 [Background] Handling chatbox question:', question);
+    console.log('🎯 [Background] Current API mode:', this.currentApiMode);
 
     try {
       const prompt = `You are a helpful AI assistant. Answer this question intelligently.
@@ -479,8 +526,10 @@ Return ONLY valid JSON (no markdown, no extra text):
   "additionalInfo": ["helpful point 1", "helpful point 2", "helpful point 3"]
 }`;
 
-      const responseText = await this.geminiClient.generateContent(prompt);
-      const response = this.geminiClient.parseJSON(responseText);
+      const result = await this.generateContentUnified(prompt);
+      console.log('✅ [Background] Chatbox answer generated using:', result.source);
+
+      const response = this.geminiClient.parseJSON(result.text);
 
       // Build comprehensive answer showing both meeting context and general knowledge
       let fullAnswer = '';
@@ -517,25 +566,21 @@ Return ONLY valid JSON (no markdown, no extra text):
   }
 
   /**
-   * NEW: Handle command palette question (from any page)
+   * NEW: Handle command palette question using AI (Prompt API or Gemini API)
    * Now with current page context and cross-tab memory!
    */
   async handleCommandPaletteQuestion(question, tab, currentPageContext, currentPageUrl, currentPageTitle) {
-    if (!this.geminiClient) {
-      console.error('Gemini API not configured');
-      return;
-    }
+    console.log('🎯 [Background] Answering command palette question:', question);
+    console.log('📄 [Background] Current page:', currentPageTitle);
+    console.log('🤖 [Background] Current API mode:', this.currentApiMode);
 
     try {
-      console.log('🎯 Answering command palette question:', question);
-      console.log('📄 Current page:', currentPageTitle);
-
       // Store current page context for future use
       await this.storeTabContext(tab.id, currentPageUrl, currentPageTitle, currentPageContext);
 
       // Retrieve context from all recent tabs (cross-tab memory)
       const recentTabsContext = await this.getRecentTabsContext();
-      console.log('🧠 Retrieved context from', recentTabsContext.length, 'recent tabs');
+      console.log('🧠 [Background] Retrieved context from', recentTabsContext.length, 'recent tabs');
 
       // Build comprehensive context
       let contextString = '';
@@ -576,12 +621,13 @@ Return JSON:
   "additionalInfo": ["helpful point 1", "helpful point 2", "helpful point 3"]
 }`;
 
-      const responseText = await this.geminiClient.generateContent(prompt, {
+      const result = await this.generateContentUnified(prompt, {
         temperature: 0.7,
         maxOutputTokens: 800
       });
+      console.log('✅ [Background] Command palette answer generated using:', result.source);
 
-      const response = this.geminiClient.parseJSON(responseText);
+      const response = this.geminiClient.parseJSON(result.text);
 
       console.log('✅ Command palette answer generated (used context:', response.usedContext, ')');
 
@@ -841,11 +887,174 @@ Return JSON:
    * NEW: Show welcome notification
    */
   showWelcomeNotification() {
-    chrome.notifications.create({
-      type: 'basic',
-      iconUrl: 'icons/icon128.png',
-      title: 'SyncUp Universal Ready!',
-      message: 'Press Ctrl+K (Cmd+K on Mac) to open command palette. Configure your Gemini API key in settings.'
+    try {
+      if (chrome.notifications && chrome.notifications.create) {
+        chrome.notifications.create({
+          type: 'basic',
+          iconUrl: 'icons/icon128.png',
+          title: 'SyncUp Universal Ready!',
+          message: 'Press Ctrl+Shift+Space to open command palette. Prompt API will auto-detect on web pages.'
+        });
+      }
+    } catch (error) {
+      console.log('ℹ️ [Background] Notifications not available:', error.message);
+    }
+  }
+
+  /**
+   * PROMPT API: Update Prompt API availability status
+   */
+  updatePromptApiStatus(status, available) {
+    console.log(`🔄 [Background] Updating Prompt API status: ${status}, available: ${available}`);
+
+    this.promptApiStatus = status;
+    this.promptApiAvailable = available;
+    this.lastApiCheck = Date.now();
+
+    // Update current API mode based on availability
+    // Accept both 'readily' and 'available' as valid statuses
+    if (available && (status === 'readily' || status === 'available')) {
+      this.currentApiMode = 'prompt-api';
+      console.log('✅ [Background] Switched to Prompt API mode (on-device Gemini Nano)');
+    } else {
+      this.currentApiMode = 'gemini-api';
+      console.log('🌐 [Background] Using Gemini API mode (cloud)');
+    }
+
+    // Broadcast status update to all tabs and side panel
+    this.broadcastApiStatus();
+  }
+
+  /**
+   * PROMPT API: Broadcast API status to all listeners
+   */
+  async broadcastApiStatus() {
+    const status = {
+      type: 'API_STATUS_UPDATE',
+      currentApiMode: this.currentApiMode,
+      promptApiAvailable: this.promptApiAvailable,
+      promptApiStatus: this.promptApiStatus
+    };
+
+    console.log('📡 [Background] Broadcasting API status:', status);
+
+    // Send to all tabs
+    try {
+      const tabs = await chrome.tabs.query({});
+      for (const tab of tabs) {
+        chrome.tabs.sendMessage(tab.id, status, () => {
+          if (chrome.runtime.lastError) {
+            // Ignore errors for tabs that don't have content script
+          }
+        });
+      }
+    } catch (error) {
+      console.error('Error broadcasting to tabs:', error);
+    }
+
+    // Send to runtime (for side panel and popup)
+    chrome.runtime.sendMessage(status, () => {
+      if (chrome.runtime.lastError) {
+        // Ignore if no listeners
+      }
+    });
+  }
+
+  /**
+   * PROMPT API: Unified content generation - tries Prompt API first, falls back to Gemini API
+   */
+  async generateContentUnified(prompt, options = {}) {
+    console.log('🎯 [Background] Unified content generation requested');
+    console.log('📝 [Background] Prompt preview:', prompt.substring(0, 100) + '...');
+    console.log('⚙️ [Background] Current API mode:', this.currentApiMode);
+
+    // Try Prompt API if available
+    if (this.promptApiAvailable && this.currentApiMode === 'prompt-api') {
+      console.log('🚀 [Background] Attempting Prompt API...');
+
+      try {
+        // Get active tab
+        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (tabs[0]) {
+          const result = await this.sendPromptToContentScript(tabs[0].id, prompt, options);
+
+          if (result.success) {
+            console.log('✅ [Background] Prompt API successful!');
+            return {
+              text: result.response,
+              source: 'prompt-api',
+              duration: result.duration
+            };
+          } else {
+            console.warn('⚠️ [Background] Prompt API failed, falling back to Gemini API:', result.error);
+          }
+        }
+      } catch (error) {
+        console.error('❌ [Background] Prompt API error, falling back to Gemini API:', error);
+      }
+    }
+
+    // Fallback to Gemini API
+    console.log('🌐 [Background] Using Gemini API (cloud)...');
+
+    if (!this.geminiClient) {
+      throw new Error('Neither Prompt API nor Gemini API available');
+    }
+
+    try {
+      const text = await this.geminiClient.generateContent(prompt, options);
+      console.log('✅ [Background] Gemini API successful!');
+
+      return {
+        text: text,
+        source: 'gemini-api'
+      };
+    } catch (error) {
+      console.error('❌ [Background] Gemini API failed:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * PROMPT API: Send prompt to content script for Prompt API processing
+   */
+  async sendPromptToContentScript(tabId, prompt, options = {}) {
+    console.log(`📤 [Background] Sending prompt to content script (tab ${tabId})`);
+
+    return new Promise((resolve) => {
+      const requestId = Date.now() + Math.random();
+
+      // Set up one-time listener for the response
+      const responseListener = (message, sender) => {
+        if (message.type === 'PROMPT_API_RESULT' && message.requestId === requestId) {
+          console.log('📥 [Background] Received Prompt API result');
+          chrome.runtime.onMessage.removeListener(responseListener);
+          resolve(message.result);
+        }
+      };
+
+      chrome.runtime.onMessage.addListener(responseListener);
+
+      // Send request to content script
+      chrome.tabs.sendMessage(tabId, {
+        type: 'EXECUTE_PROMPT_API',
+        requestId: requestId,
+        prompt: prompt,
+        options: options
+      }, (response) => {
+        if (chrome.runtime.lastError) {
+          console.error('❌ [Background] Error sending to content script:', chrome.runtime.lastError.message);
+          chrome.runtime.onMessage.removeListener(responseListener);
+          resolve({ success: false, error: chrome.runtime.lastError.message });
+        }
+      });
+
+      // Timeout after 30 seconds
+      setTimeout(() => {
+        chrome.runtime.onMessage.removeListener(responseListener);
+        console.warn('⏱️ [Background] Prompt API request timed out');
+        resolve({ success: false, error: 'Timeout' });
+      }, 30000);
     });
   }
 }

@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "SyncUp - Universal Context Intelligence",
   "version": "2.0.0",
-  "description": "AI-powered contextual awareness across all tabs using Google Gemini - Generate context cards, track action items, and get instant answers",
+  "description": "AI-powered contextual awareness across all tabs using Google Gemini Nano (on-device) and Gemini API - Generate context cards, track action items, and get instant answers",
 
   "permissions": [
     "tabCapture",
@@ -10,7 +10,8 @@
     "activeTab",
     "storage",
     "tabs",
-    "sidePanel"
+    "sidePanel",
+    "notifications"
   ],
 
   "host_permissions": [
@@ -24,14 +25,14 @@
   "content_scripts": [
     {
       "matches": ["https://meet.google.com/*"],
-      "js": ["content/meet-content.js"],
+      "js": ["content/prompt-api-handler.js", "content/meet-content.js"],
       "css": ["styles.css"],
       "run_at": "document_end",
       "all_frames": false
     },
     {
       "matches": ["<all_urls>"],
-      "js": ["content/universal-content.js"],
+      "js": ["content/prompt-api-handler.js", "content/universal-content.js"],
       "css": ["content/universal-styles.css"],
       "run_at": "document_end",
       "all_frames": false

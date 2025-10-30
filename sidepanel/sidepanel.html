@@ -54,6 +54,27 @@
       gap: 6px;
     }
 
+    .api-status-stat {
+      padding: 4px 10px;
+      background: rgba(138, 180, 248, 0.15);
+      border-radius: 12px;
+      border: 1px solid rgba(138, 180, 248, 0.3);
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .api-status-stat.on-device {
+      background: rgba(52, 168, 83, 0.15);
+      border-color: rgba(52, 168, 83, 0.4);
+      color: #34a853;
+    }
+
+    .api-status-stat.cloud {
+      background: rgba(138, 180, 248, 0.15);
+      border-color: rgba(138, 180, 248, 0.4);
+      color: #8ab4f8;
+    }
+
     /* Content */
     .content {
       flex: 1;
@@ -263,6 +284,10 @@
         <div class="stat">
           <span>✅</span>
           <span id="actionsCount">0 actions</span>
+        </div>
+        <div class="stat api-status-stat">
+          <span id="apiStatusIcon">🤖</span>
+          <span id="apiStatusText">Checking...</span>
         </div>
       </div>
     </div>
