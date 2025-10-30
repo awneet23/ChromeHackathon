@@ -33,6 +33,10 @@ class SyncUpUniversal {
     this.lastApiCheck = 0;
     this.apiCheckInterval = 60000; // Check every 60 seconds
 
+    // Request queue for Prompt API (only one request at a time)
+    this.promptApiQueue = [];
+    this.promptApiProcessing = false;
+
     this.init();
   }
 
@@ -210,6 +214,52 @@ class SyncUpUniversal {
       }
     } else {
       console.warn('⚠️ No Gemini API key configured');
+    }
+  }
+
+  /**
+   * Parse JSON response, handling markdown code blocks
+   * Standalone utility that works regardless of which AI is used
+   */
+  parseJSON(text) {
+    try {
+      // Remove markdown code blocks
+      let cleanText = text.replace(/```json\n?|\n?```/g, '').trim();
+
+      // Try to extract JSON if embedded in other text
+      const jsonMatch = cleanText.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+      if (jsonMatch) {
+        cleanText = jsonMatch[0];
+      }
+
+      console.log('🔍 Attempting to parse JSON, length:', cleanText.length);
+
+      // Attempt to parse
+      return JSON.parse(cleanText);
+    } catch (error) {
+      console.error('❌ JSON Parse Error:', error.message);
+      console.error('❌ Raw text (first 500 chars):', text.substring(0, 500));
+
+      // Try to fix common issues and retry
+      try {
+        let cleanText = text.replace(/```json\n?|\n?```/g, '').trim();
+        const jsonMatch = cleanText.match(/\{[\s\S]*\}|\[[\s\S]*\]/);
+        if (jsonMatch) {
+          cleanText = jsonMatch[0];
+        }
+
+        // Replace unescaped newlines in strings
+        let fixed = cleanText.replace(/([^\\])\\n/g, '$1\\\\n');
+
+        console.log('🔧 Trying fixed JSON...');
+        return JSON.parse(fixed);
+      } catch (retryError) {
+        console.error('❌ Retry also failed:', retryError.message);
+        console.error('❌ Full raw response:', text);
+
+        // Final fallback: return structured error
+        throw new Error(`Failed to parse JSON response: ${error.message}. Check console for full response.`);
+      }
     }
   }
 
@@ -435,7 +485,7 @@ Return ONLY JSON array: ["keyword1", "keyword2"]`;
       const result = await this.generateContentUnified(keywordsPrompt);
       console.log('✅ [Background] Keywords extracted using:', result.source);
 
-      const keywords = this.geminiClient.parseJSON(result.text);
+      const keywords = this.parseJSON(result.text);
 
       console.log('📋 Extracted keywords:', keywords);
 
@@ -455,7 +505,7 @@ Return ONLY JSON array: ["keyword1", "keyword2"]`;
   /**
    * NEW: Generate context card using AI (Prompt API or Gemini API)
    */
-  async generateContextCardWithGemini(keyword) {
+  async generateContextCardWithGemini(keyword, tabId = null) {
     console.log('💡 [Background] Generating context card for:', keyword);
     console.log('🎯 [Background] Current API mode:', this.currentApiMode);
 
@@ -472,10 +522,10 @@ Return JSON:
   "learnMore": ["resource1", "resource2"]
 }`;
 
-      const result = await this.generateContentUnified(prompt);
+      const result = await this.generateContentUnified(prompt, {}, tabId);
       console.log('✅ [Background] Context card generated using:', result.source);
 
-      const response = this.geminiClient.parseJSON(result.text);
+      const response = this.parseJSON(result.text);
 
       const card = {
         id: Date.now() + Math.random(),
@@ -529,7 +579,7 @@ Return ONLY valid JSON (no markdown, no extra text):
       const result = await this.generateContentUnified(prompt);
       console.log('✅ [Background] Chatbox answer generated using:', result.source);
 
-      const response = this.geminiClient.parseJSON(result.text);
+      const response = this.parseJSON(result.text);
 
       // Build comprehensive answer showing both meeting context and general knowledge
       let fullAnswer = '';
@@ -709,11 +759,15 @@ Return JSON:
 
   /**
    * NEW: Handle content detected from universal tabs
+   * Now automatically generates context cards and action items
    */
   async handleContentDetected(message, tab) {
     if (!this.settings.enableUniversalContext) return;
 
     const { text, platform } = message;
+
+    console.log('📄 [Background] Content detected from:', platform);
+    console.log('📝 [Background] Text length:', text.length);
 
     // Update tab context
     this.activeTabContexts.set(tab.id, {
@@ -724,8 +778,107 @@ Return JSON:
       timestamp: Date.now()
     });
 
+    // Check if we have ANY AI available before analyzing
+    const hasGeminiAPI = this.geminiClient && this.geminiClient.apiKey;
+    const hasPromptAPI = this.promptApiAvailable && this.currentApiMode === 'prompt-api';
+
+    if (!hasGeminiAPI && !hasPromptAPI) {
+      console.log('⏳ [Background] Waiting for AI to be available before analyzing...');
+
+      // Wait a bit for Prompt API status to arrive, then retry
+      setTimeout(async () => {
+        const retryHasPromptAPI = this.promptApiAvailable && this.currentApiMode === 'prompt-api';
+        if (retryHasPromptAPI) {
+          console.log('✅ [Background] Prompt API now available, analyzing content...');
+          await this.analyzePageContent(text, platform, tab);
+          this.updateSidePanel();
+        } else {
+          console.warn('⚠️ [Background] No AI available (no Gemini API key and Prompt API not ready)');
+        }
+      }, 2000); // Wait 2 seconds for Prompt API initialization
+
+      this.updateSidePanel();
+      return;
+    }
+
+    // Automatically analyze content and generate cards
+    await this.analyzePageContent(text, platform, tab);
+
     // Update side panel if open
     this.updateSidePanel();
+  }
+
+  /**
+   * Helper: Sleep utility for rate limiting
+   */
+  sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+  }
+
+  /**
+   * Automatically analyze page content and generate insights
+   */
+  async analyzePageContent(text, platform, tab) {
+    console.log('🔍 [Background] Analyzing page content...');
+    console.log('🤖 [Background] Using API mode:', this.currentApiMode);
+
+    try {
+      // Extract key topics/keywords
+      const keywordsPrompt = `Analyze this ${platform} page content and extract 2-3 most important topics or keywords that would be useful to remember.
+
+Content: "${text.substring(0, 3000)}"
+
+Return ONLY a JSON array of keywords: ["keyword1", "keyword2", "keyword3"]`;
+
+      const keywordsResult = await this.generateContentUnified(keywordsPrompt, {
+        temperature: 0.3,
+        maxOutputTokens: 200
+      }, tab.id);
+
+      const keywords = this.parseJSON(keywordsResult.text);
+      console.log('📋 [Background] Extracted keywords:', keywords);
+
+      // Generate context card for each keyword (queue handles sequential processing)
+      for (const keyword of keywords.slice(0, 2)) {
+        await this.generateContextCardWithGemini(keyword, tab.id);
+      }
+
+      // Extract action items if any
+      const actionItemsPrompt = `Analyze this ${platform} page and extract any action items, tasks, or to-dos mentioned.
+
+Content: "${text.substring(0, 3000)}"
+
+Return ONLY valid JSON (no markdown):
+{
+  "hasActionItems": true/false,
+  "items": [
+    {"task": "description", "priority": "high/medium/low", "context": "where mentioned"}
+  ]
+}`;
+
+      const actionResult = await this.generateContentUnified(actionItemsPrompt, {
+        temperature: 0.3,
+        maxOutputTokens: 300
+      }, tab.id);
+
+      const actionData = this.parseJSON(actionResult.text);
+      console.log('✅ [Background] Action items:', actionData);
+
+      if (actionData.hasActionItems && actionData.items) {
+        actionData.items.forEach(item => {
+          this.actionItems.push({
+            ...item,
+            source: platform,
+            url: tab.url,
+            timestamp: Date.now()
+          });
+        });
+        console.log('📝 [Background] Added', actionData.items.length, 'action items');
+      }
+
+    } catch (error) {
+      console.error('❌ [Background] Error analyzing content:', error);
+    }
   }
 
   /**
@@ -963,7 +1116,7 @@ Return JSON:
   /**
    * PROMPT API: Unified content generation - tries Prompt API first, falls back to Gemini API
    */
-  async generateContentUnified(prompt, options = {}) {
+  async generateContentUnified(prompt, options = {}, tabId = null) {
     console.log('🎯 [Background] Unified content generation requested');
     console.log('📝 [Background] Prompt preview:', prompt.substring(0, 100) + '...');
     console.log('⚙️ [Background] Current API mode:', this.currentApiMode);
@@ -973,10 +1126,16 @@ Return JSON:
       console.log('🚀 [Background] Attempting Prompt API...');
 
       try {
-        // Get active tab
-        const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (tabs[0]) {
-          const result = await this.sendPromptToContentScript(tabs[0].id, prompt, options);
+        // Use provided tabId or query for active tab
+        let targetTabId = tabId;
+        if (!targetTabId) {
+          const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+          targetTabId = tabs[0]?.id;
+        }
+
+        if (targetTabId) {
+          console.log('📍 [Background] Using tab ID:', targetTabId);
+          const result = await this.sendPromptToContentScript(targetTabId, prompt, options);
 
           if (result.success) {
             console.log('✅ [Background] Prompt API successful!');
@@ -988,6 +1147,8 @@ Return JSON:
           } else {
             console.warn('⚠️ [Background] Prompt API failed, falling back to Gemini API:', result.error);
           }
+        } else {
+          console.warn('⚠️ [Background] No tab ID available for Prompt API');
         }
       } catch (error) {
         console.error('❌ [Background] Prompt API error, falling back to Gemini API:', error);
@@ -1016,19 +1177,63 @@ Return JSON:
   }
 
   /**
-   * PROMPT API: Send prompt to content script for Prompt API processing
+   * PROMPT API: Process request queue (one at a time)
+   */
+  async processPromptApiQueue() {
+    if (this.promptApiProcessing || this.promptApiQueue.length === 0) {
+      return;
+    }
+
+    this.promptApiProcessing = true;
+    console.log(`🔄 [Background] Processing Prompt API queue (${this.promptApiQueue.length} items)`);
+
+    while (this.promptApiQueue.length > 0) {
+      const { tabId, prompt, options, resolve } = this.promptApiQueue.shift();
+
+      try {
+        const result = await this.sendPromptToContentScriptDirect(tabId, prompt, options);
+        resolve(result);
+      } catch (error) {
+        resolve({ success: false, error: error.message });
+      }
+
+      // Small delay between requests to avoid overwhelming content script
+      if (this.promptApiQueue.length > 0) {
+        await this.sleep(500);
+      }
+    }
+
+    this.promptApiProcessing = false;
+    console.log('✅ [Background] Prompt API queue processed');
+  }
+
+  /**
+   * PROMPT API: Send prompt to content script (queued)
    */
   async sendPromptToContentScript(tabId, prompt, options = {}) {
+    return new Promise((resolve) => {
+      this.promptApiQueue.push({ tabId, prompt, options, resolve });
+      console.log(`📥 [Background] Added to Prompt API queue (position: ${this.promptApiQueue.length})`);
+      this.processPromptApiQueue();
+    });
+  }
+
+  /**
+   * PROMPT API: Send prompt directly (used by queue processor)
+   */
+  async sendPromptToContentScriptDirect(tabId, prompt, options = {}) {
     console.log(`📤 [Background] Sending prompt to content script (tab ${tabId})`);
 
     return new Promise((resolve) => {
       const requestId = Date.now() + Math.random();
+      let timeoutId;
 
       // Set up one-time listener for the response
-      const responseListener = (message, sender) => {
+      const responseListener = (message) => {
         if (message.type === 'PROMPT_API_RESULT' && message.requestId === requestId) {
           console.log('📥 [Background] Received Prompt API result');
           chrome.runtime.onMessage.removeListener(responseListener);
+          clearTimeout(timeoutId);
           resolve(message.result);
         }
       };
@@ -1041,16 +1246,17 @@ Return JSON:
         requestId: requestId,
         prompt: prompt,
         options: options
-      }, (response) => {
+      }, () => {
         if (chrome.runtime.lastError) {
           console.error('❌ [Background] Error sending to content script:', chrome.runtime.lastError.message);
           chrome.runtime.onMessage.removeListener(responseListener);
+          clearTimeout(timeoutId);
           resolve({ success: false, error: chrome.runtime.lastError.message });
         }
       });
 
       // Timeout after 30 seconds
-      setTimeout(() => {
+      timeoutId = setTimeout(() => {
         chrome.runtime.onMessage.removeListener(responseListener);
         console.warn('⏱️ [Background] Prompt API request timed out');
         resolve({ success: false, error: 'Timeout' });

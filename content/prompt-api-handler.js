@@ -13,7 +13,8 @@ class PromptAPIHandler {
     this.availabilityStatus = 'unknown';
     this.sessionConfig = {
       temperature: 0.7,
-      topK: 3
+      topK: 3,
+      language: 'en'  // Specify output language to avoid warnings and improve quality
     };
 
     console.log('🤖 [Prompt API] Handler initialized');
