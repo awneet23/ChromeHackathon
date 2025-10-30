@@ -11,6 +11,11 @@ class SidePanelUI {
     this.cardsCount = document.getElementById('cardsCount');
     this.actionsCount = document.getElementById('actionsCount');
 
+    // API status elements
+    this.apiStatusIcon = document.getElementById('apiStatusIcon');
+    this.apiStatusText = document.getElementById('apiStatusText');
+    this.apiStatusStat = document.querySelector('.api-status-stat');
+
     this.init();
   }
 
@@ -19,6 +24,9 @@ class SidePanelUI {
 
     // Load initial data
     await this.loadData();
+
+    // Get API status
+    await this.loadApiStatus();
 
     // Listen for updates from background
     chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -30,7 +38,63 @@ class SidePanelUI {
     // Refresh every 5 seconds
     setInterval(() => {
       this.loadData();
+      this.loadApiStatus();
     }, 5000);
+  }
+
+  /**
+   * Load API status from background
+   */
+  async loadApiStatus() {
+    console.log('🔍 [Side Panel] Loading API status...');
+
+    try {
+      chrome.runtime.sendMessage({ type: 'GET_API_STATUS' }, (response) => {
+        if (response) {
+          console.log('📊 [Side Panel] API status received:', response);
+          this.updateApiStatus(response.currentApiMode, response.promptApiStatus);
+        }
+      });
+    } catch (error) {
+      console.error('❌ [Side Panel] Failed to load API status:', error);
+    }
+  }
+
+  /**
+   * Update API status display
+   */
+  updateApiStatus(apiMode, promptApiStatus) {
+    console.log('🎨 [Side Panel] Updating API status display:', apiMode, promptApiStatus);
+
+    if (!this.apiStatusIcon || !this.apiStatusText || !this.apiStatusStat) {
+      console.warn('⚠️ [Side Panel] API status elements not found');
+      return;
+    }
+
+    // Clear previous classes
+    this.apiStatusStat.classList.remove('on-device', 'cloud');
+
+    if (apiMode === 'prompt-api') {
+      // Using Gemini Nano on-device
+      this.apiStatusIcon.textContent = '⚡';
+      this.apiStatusText.textContent = 'Nano (On-Device)';
+      this.apiStatusStat.classList.add('on-device');
+      this.apiStatusStat.title = 'Using on-device Gemini Nano via Prompt API - Fast, private, and offline capable';
+      console.log('✅ [Side Panel] Displaying: Gemini Nano (On-Device)');
+    } else if (apiMode === 'gemini-api') {
+      // Using cloud Gemini API (or attempting to)
+      this.apiStatusIcon.textContent = '☁️';
+      this.apiStatusText.textContent = 'Gemini (Cloud)';
+      this.apiStatusStat.classList.add('cloud');
+      this.apiStatusStat.title = 'Using cloud Gemini API - Requires internet and API key. Configure API key in settings if not set.';
+      console.log('✅ [Side Panel] Displaying: Gemini API (Cloud)');
+    } else {
+      // No API available
+      this.apiStatusIcon.textContent = '⚠️';
+      this.apiStatusText.textContent = 'No API';
+      this.apiStatusStat.title = 'No AI API available - Please configure Gemini API key or enable Chrome built-in AI';
+      console.log('⚠️ [Side Panel] Displaying: No API Available');
+    }
   }
 
   async loadData() {
@@ -62,6 +126,11 @@ class SidePanelUI {
 
       case 'NEW_CARDS':
         this.renderContextCards(message.cards);
+        break;
+
+      case 'API_STATUS_UPDATE':
+        console.log('📊 [Side Panel] Received API status update');
+        this.updateApiStatus(message.currentApiMode, message.promptApiStatus);
         break;
     }
   }
