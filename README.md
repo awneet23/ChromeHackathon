@@ -9,46 +9,54 @@ A Chrome extension that captures conversations in Google Meet and automatically 
 - Presentation link: https://drive.google.com/file/d/1bPaV5dkZIV4J0YWZTHp43G4R7cHjVM-i/view?usp=sharing
 - Installation link (Chrome extension in review by the Google team): https://drive.google.com/drive/folders/10416hfb4tRKtLIdB_TvXWAOM84pDJBkm?usp=sharing
 
-## What It Does
+## Inspiration
 
-SyncUp listens to your Google Meet conversations and automatically creates information cards about topics mentioned. When someone talks about Docker, Kubernetes, or any technical concept, the extension generates a detailed explanation card with key points, use cases, and resources - like having ChatGPT instantly explain things during your meeting.
+In fast-paced online meetings, lectures, and content-heavy browsing, it’s easy to lose track of key takeaways and next steps. We wanted a lightweight, privacy-friendly way to automatically extract important context and action items directly from what users are viewing — without relying on cloud-based AI or external APIs. That’s how SyncUp was born: a smart, on-device assistant that transforms any webpage, transcript, or document into structured insights and actionable next steps.
 
-The extension also includes an AI chatbox where you can ask questions about the meeting or any topic, and get context-aware responses.
+## What it does
 
-## Key Features
+SyncUp is a Chrome extension that uses on-device AI to understand webpage or transcript content in real time. With one click, it:
+- Extracts key topics, summaries, and action items from the page content or meeting transcript.
+- Provides a context-aware Q&A chatbox powered by Gemini Nano for instant clarifications.
+- Offers keyword highlighting and explanations for detected topics.
+- Runs entirely locally — no data leaves your device, ensuring complete privacy.
+- Whether you’re reviewing meeting notes, reading research, or analyzing articles, SyncUp helps you quickly capture the essence and next steps without switching tools.
 
-**Real-Time Topic Detection**
-- Captures speech from all meeting participants using Google Meet captions
-- Extracts important keywords and technical terms from conversations
-- Generates detailed explanation cards automatically
+## How we built it
 
-**AI-Powered Information Cards**
-- Each card includes a summary, key points, use cases, and learning resources
-- Cards expand/collapse for easy reading
-- Prevents duplicate cards for the same topic
+We developed a Chrome extension that integrates with the Chrome Prompt API, enabling access to Google Gemini Nano, the on-device AI model. The extension extracts visible text content (such as transcripts, pages, or docs) and sends it to the Gemini Nano model for:
+- Keyword extraction
+- Topic explanation
+- Contextual Q&A generation
+- A local chat interface was implemented to allow users to ask questions about the content, all powered by Gemini Nano running directly in the browser.
 
-**AI Chatbox**
-- Ask questions about the meeting or general topics
-- Get instant AI responses with meeting context
-- Works like ChatGPT but aware of your meeting content
+The UI is built using HTML, CSS, and JavaScript, focusing on a clean, minimal user experience integrated seamlessly into Chrome’s side panel.
 
-**Multilingual Support**
-- Supports English and Hindi conversations
-- Detects code-switching between languages
-- Responds in English regardless of input language
+## Challenges we ran into
 
-**Clean Interface**
-- Sidebar that slides in from the right side of Google Meet
-- Toggle button to show/hide the sidebar
-- Start/Stop/Clear controls
-- Smooth animations and modern design
+- Working with the new Chrome Prompt API was a learning curve since documentation and examples were limited.
+- Optimizing text extraction for different webpage structures (articles, transcripts, meeting notes) required dynamic parsing strategies.
+- Ensuring on-device performance while maintaining comprehensive summarization and topic detection was challenging.
+- Designing a smooth, non-intrusive user interface that fits naturally within Chrome without slowing browsing.
 
-## Upcoming Features (1 month)
+## Accomplishments that we're proud of
+- Successfully integrated Gemini Nano to run entirely on-device, proving that powerful AI can be fast, private, and local.
+- Built a functional prototype that can generate summaries, keywords, and action items in real time.
+- Created a privacy-first AI assistant — users get intelligent insights without ever sending data to the cloud.
+- Learned to work with cutting-edge browser APIs and make them practical for productivity use cases.
 
-- Meeting Memory for post-meeting analysis, questions, and cross-meeting reference
-- Multi-format attachments like PDFs, JPGs, MP4s, PPTs, etc.
-- Enhanced UI with new themes and trending skins for Google meetings.
-- Multi-platform support for Zoom, Microsoft teams, etc.
+## What we learned
+The potential of on-device AI models like Gemini Nano is enormous — they can deliver intelligent results with zero latency and full privacy.
+Building around new APIs requires experimentation and adaptability, but it also opens the door for innovative user experiences.
+Combining context extraction, local LLM reasoning, and action item generation can dramatically streamline productivity workflows.
+
+## What’s next for SyncUp
+
+- Expand support for more content types (e.g., PDFs, YouTube transcripts, Google Docs).
+- Add smart action syncing, allowing users to export action items to tools like Google Tasks or Notion.
+- Improve contextual awareness, so SyncUp can maintain understanding across tabs and sessions.
+- Release on the Chrome Web Store with user customization for prompt styles and output formats.
+- Explore integrations with other on-device models for enhanced summarization or sentiment analysis.
 
 ## Technology Stack
 
@@ -84,58 +92,6 @@ cd Syncup
 3. Pin the extension to your toolbar for easy access
 
 **Note:** No API keys required! The extension uses Google Gemini Nano which runs locally in your browser.
-
-## How to Use
-
-1. Join a Google Meet call
-2. Click the toggle button in the middle-right corner to open the sidebar
-3. Click the "Start" button (play icon) in the sidebar
-4. Enable Google Meet captions by pressing the "C" key - this captures all participants
-5. Start talking or let others speak
-6. Watch as information cards appear automatically for mentioned topics
-7. Click "Read more" on any card to see full details
-8. Use the chatbox at the bottom to ask questions
-
-The extension processes speech in 15-second batches and generates cards for important keywords it detects.
-
-## Example Usage
-
-**Scenario 1: Technical Discussion**
-- Someone mentions "Docker containerization"
-- Extension detects "Docker" as a keyword
-- Generates a card explaining Docker with key points and resources
-- Card appears in the sidebar within 2-3 seconds
-
-**Scenario 2: Using the Chatbox**
-- You type "What is Kubernetes?"
-- AI responds with a comprehensive explanation
-- If Kubernetes was mentioned in the meeting, response includes that context
-
-**Scenario 3: Multilingual Meeting**
-- Participant says "हमें Docker install करना है" (We need to install Docker)
-- Extension detects Hindi, extracts "Docker"
-- Generates card in English with Docker information
-
-## Architecture
-
-The extension has three main components:
-
-**Content Script** (`content_script.js`)
-- Injects the sidebar UI into Google Meet pages
-- Captures speech using Web Speech API and Google Meet captions
-- Displays information cards and handles user interactions
-- Manages the chatbox interface
-
-**Background Service Worker** (`background.js`)
-- Processes transcripts and extracts keywords using Chrome Prompt API
-- Generates detailed information cards using local Gemini Nano model
-- Handles chatbox questions with context awareness
-- Manages communication between components
-
-**Popup** (`popup.html`, `popup.js`)
-- Extension control panel
-- Shows recording status and session stats
-- Provides Start/Stop/Clear controls
 
 ## AI Integration
 
