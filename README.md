@@ -1,13 +1,11 @@
 # SyncUp - AI Meeting Assistant for Google Meet
 
-A Chrome extension that captures conversations in Google Meet and automatically generates contextual information cards using AI. Built with Chrome's Prompt API leveraging Google Gemini Nano model that runs locally in your browser for fast, private, and intelligent content generation.
+Extracts key topics, summaries, and action items from the page content or meeting transcript. Provides a context-aware Q&A chatbox powered by Gemini Nano for instant clarifications. Offers keyword highlighting and explanations for detected topics. Runs entirely locally — no data leaves your device, ensuring complete privacy.
 
 ## Resources
 
-- Demo video: https://youtu.be/NgmFNfwHOZI
-- Landing Page and installation: https://rohit026.github.io/
-- Presentation link: https://drive.google.com/file/d/1bPaV5dkZIV4J0YWZTHp43G4R7cHjVM-i/view?usp=sharing
-- Installation link (Chrome extension in review by the Google team): https://drive.google.com/drive/folders/10416hfb4tRKtLIdB_TvXWAOM84pDJBkm?usp=sharing
+- Demo video: [https://youtu.be/NgmFNfwHOZI](https://youtu.be/SNse2wbD0bc)
+- Hackathon Submission: https://devpost.com/software/sync-up-s4iwb3
 
 ## Inspiration
 
