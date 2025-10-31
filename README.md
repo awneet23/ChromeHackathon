@@ -1,4 +1,4 @@
-# SyncUpSyncUp helps in generating context and action items based on the web page content.
+# SyncUp
 
 Extracts key topics, summaries, and action items from the page content or meeting transcript. Provides a context-aware Q&A chatbox powered by Gemini Nano for instant clarifications. Offers keyword highlighting and explanations for detected topics. Runs entirely locally — no data leaves your device, ensuring complete privacy.
 
